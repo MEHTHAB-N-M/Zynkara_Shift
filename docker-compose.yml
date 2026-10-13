@@ -4,6 +4,7 @@ services:
   postgres-control:
     image: postgres:15-alpine
     container_name: zynkara-postgres-control
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -23,6 +24,7 @@ services:
   control-plane-api:
     image: node:18-alpine
     container_name: zynkara-control-plane-api
+    restart: unless-stopped
     working_dir: /app
     command: >
       sh -c "npm install && npm start"
@@ -56,6 +58,7 @@ services:
   traefik:
     image: traefik:v2.11
     container_name: zynkara-traefik
+    restart: unless-stopped
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
@@ -72,6 +75,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: zynkara-cloudflared
+    restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
@@ -79,7 +83,6 @@ services:
       - traefik
     networks:
       - zynkara-traefik-net
-    restart: unless-stopped
 
 
 networks:

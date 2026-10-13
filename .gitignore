@@ -24,3 +24,6 @@ frontend/dist/
 *.njsproj
 *.sln
 *.swp
+
+# Docs & Screenshots
+docs/
