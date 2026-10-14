@@ -1,5 +1,6 @@
 const fs = require('fs');
 const Docker = require('dockerode');
+const WatchdogEngine = require('./watchdog');
 
 class OrchestrationService {
   constructor() {
@@ -9,9 +10,11 @@ class OrchestrationService {
     
     try {
       this.docker = new Docker();
+      this.watchdog = new WatchdogEngine(this.docker);
     } catch (e) {
       console.error("Warning: Failed to connect to docker daemon:", e);
       this.docker = null;
+      this.watchdog = new WatchdogEngine(null);
     }
   }
 
@@ -232,15 +235,20 @@ class OrchestrationService {
     return { dbEnv, connectionInfo };
   }
 
-  async deployApp(ownerId, projectId, subdomain, appImage, appPort, envVars = {}, dbConnectionInfo = {}) {
+  async deployApp(ownerId, projectId, subdomain, appImage, appPort, envVars = {}, dbConnectionInfo = {}, watchdogOptions = null) {
     if (!this.docker) throw new Error("Docker client not initialized");
 
     const appName = `zynkara-app-${projectId}`;
     const projectNetName = `zynkara-project-${projectId}`;
 
-    // Clean up existing app container
+    // Inspect previous app container if exists (for auto-rollback preservation)
+    let previousImage = null;
     try {
       const oldApp = this.docker.getContainer(appName);
+      const oldInspect = await oldApp.inspect();
+      if (oldInspect && oldInspect.Config && oldInspect.Config.Image) {
+        previousImage = oldInspect.Config.Image;
+      }
       await oldApp.stop({ t: 2 });
       await oldApp.remove();
     } catch (e) {}
@@ -291,7 +299,41 @@ class OrchestrationService {
 
     // Start container
     await appContainer.start();
+
+    // Execute Self-Healing Post-Boot Health Checks if options passed
+    if (watchdogOptions) {
+      const rollbackCallback = (previousImage && previousImage !== appImage) ? async () => {
+        console.log(`[ROLLBACK] Reverting to previous stable image: ${previousImage}`);
+        try {
+          await appContainer.stop({ t: 2 });
+          await appContainer.remove();
+        } catch (e) {}
+        return await this.deployApp(ownerId, projectId, subdomain, previousImage, appPort, envVars, dbConnectionInfo, null);
+      } : null;
+
+      const healthResult = await this.watchdog.monitorPostBoot(appContainer.id, {
+        projectId,
+        targetPort: appPort,
+        probeUrl: watchdogOptions.probeUrl,
+        timeoutSeconds: watchdogOptions.timeoutSeconds || 30,
+        rollbackImage: previousImage,
+        onProgress: watchdogOptions.onProgress || console.log,
+        onRollback: rollbackCallback
+      });
+
+      if (!healthResult.healthy) {
+        const error = new Error(`Post-boot health check failed: ${healthResult.failureReason}`);
+        error.healthDetails = healthResult;
+        throw error;
+      }
+    }
+
     return appContainer;
+  }
+
+  async getContainerTelemetry(projectId) {
+    const appName = `zynkara-app-${projectId}`;
+    return await this.watchdog.getTelemetry(appName);
   }
 
   async getContainerLogs(projectId, tail = 100) {

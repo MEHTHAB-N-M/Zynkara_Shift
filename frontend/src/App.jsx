@@ -797,13 +797,33 @@ export default function App() {
 
       setChatMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, text: data.reply } : m));
 
-      if (data.action_payload && data.action_payload.action === 'deploy') {
+      if (data.action_payload && (data.action_payload.action === 'deploy' || data.action_payload.action === 'update_env')) {
         setPendingActionPayload(data.action_payload);
       } else {
         setPendingActionPayload(null);
       }
     } catch (err) {
       setChatMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, text: `Oops! I encountered an error: ${err.message}` } : m));
+    }
+  };
+
+  const executeUpdateEnv = async () => {
+    if (!pendingActionPayload || pendingActionPayload.action !== 'update_env') return;
+    showToast(`Injecting variables into ${pendingActionPayload.project_name}...`, 'info');
+    const { project_id, env_vars, app_port } = pendingActionPayload;
+    setPendingActionPayload(null);
+    try {
+      const response = await fetch(`/api/projects/${project_id}/env`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ env_vars, app_port })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Failed to update variables');
+      showToast('Environment variables injected & container gracefully restarted!', 'success');
+      fetchProjects();
+    } catch (err) {
+      showToast(err.message, 'error');
     }
   };
 
@@ -1161,7 +1181,46 @@ export default function App() {
                 ))}
 
                 {/* Deployment approval panel */}
-                {pendingActionPayload && (
+                {/* Action preview panel (Deploy or Update Env) */}
+                {pendingActionPayload && pendingActionPayload.action === 'update_env' && (
+                  <div className="action-preview glass">
+                    <div className="preview-header">
+                      <span className="preview-title"><i className="fa-solid fa-sliders"></i> Secret & Environment Injection</span>
+                      <button className="close-preview-btn" onClick={() => setPendingActionPayload(null)} title="Clear Preview" aria-label="Clear Preview"><i className="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div className="preview-body">
+                      <table className="preview-details-table">
+                        <tbody>
+                          <tr>
+                            <td className="preview-details-label">Target Service:</td>
+                            <td className="preview-details-value"><strong>{pendingActionPayload.project_name}</strong></td>
+                          </tr>
+                          <tr>
+                            <td className="preview-details-label">Service Port:</td>
+                            <td className="preview-details-value">{pendingActionPayload.app_port}</td>
+                          </tr>
+                          {pendingActionPayload.env_vars && Object.keys(pendingActionPayload.env_vars).length > 0 && (
+                            <tr>
+                              <td className="preview-details-label">Variables:</td>
+                              <td className="preview-details-value">
+                                {Object.entries(pendingActionPayload.env_vars).map(([k, v]) => (
+                                  <div key={k} style={{ fontFamily: 'monospace', fontSize: '11px', color: '#a5b4fc' }}>
+                                    {k}={v}
+                                  </div>
+                                ))}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button className="btn btn-primary btn-sm btn-block" onClick={executeUpdateEnv}>
+                      <i className="fa-solid fa-arrows-rotate"></i> Apply Configuration & Graceful Restart
+                    </button>
+                  </div>
+                )}
+
+                {pendingActionPayload && pendingActionPayload.action === 'deploy' && (
                   <div className="action-preview glass">
                     <div className="preview-header">
                       <span className="preview-title"><i className="fa-solid fa-rocket"></i> Parsed Deployment Payload</span>

@@ -16,6 +16,7 @@ const db = require('./database');
 const { seedDatabase } = require('./seed');
 const OrchestrationService = require('./orchestration');
 const { parseChatbotIntent } = require('./chat');
+const { detectFramework, synthesizeDockerfile } = require('./buildpacks');
 const dns = require('dns').promises;
 const { sendVerificationEmail } = require('./mailer');
 const stripeSecret = process.env.STRIPE_SECRET_KEY;
@@ -216,13 +217,31 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
         }
         const repoRoot = path.join(buildDir, dirs[0]);
 
-        // Validate Dockerfile presence (Security check & requirements check)
+        // Validate or synthesize Dockerfile via Zero-Config Buildpack Engine
         const dockerfilePath = path.join(repoRoot, 'Dockerfile');
         if (!fs.existsSync(dockerfilePath)) {
-          throw new Error('Dockerfile not found in repository root. Please ensure your repository contains a Dockerfile.');
-        }
+          await appendLogs('🔍 [BUILDPACK] No Dockerfile detected in repository root. Activating Zero-Config Buildpack Engine...');
+          const frameworkInfo = detectFramework(repoRoot);
+          if (!frameworkInfo) {
+            throw new Error('Dockerfile not found and no recognized project manifests (package.json, requirements.txt, go.mod, Cargo.toml) were detected.');
+          }
 
-        await appendLogs('Dockerfile found. Commencing docker image build...');
+          await appendLogs(`⚡ [BUILDPACK] Auto-detected framework/runtime: ${frameworkInfo.name}`);
+          const synth = synthesizeDockerfile(repoRoot, frameworkInfo);
+          if (!synth.synthesized) {
+            throw new Error(`Failed to synthesize Dockerfile: ${synth.reason}`);
+          }
+          await appendLogs('⚡ [BUILDPACK] Successfully synthesized optimized multi-stage production Dockerfile.');
+
+          // Adjust service port if user kept default 80 but framework targets another default
+          if (project.app_port === 80 && frameworkInfo.defaultPort !== 80) {
+            project.app_port = frameworkInfo.defaultPort;
+            await db.query('UPDATE projects SET app_port = $1 WHERE id = $2', [project.app_port, project.id]);
+            await appendLogs(`⚡ [BUILDPACK] Auto-configured container port to ${project.app_port}/tcp.`);
+          }
+        } else {
+          await appendLogs('Dockerfile found. Commencing docker image build...');
+        }
 
         const imageTag = `zynkara-local-${project.id.replace(/-/g, '')}:latest`;
 
@@ -283,7 +302,7 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
       await appendLogs('Database microservice provisioned. Connection string injected.');
     }
 
-    // Deploy App Container
+    // Deploy App Container with Self-Healing Post-Boot Watchdog
     await appendLogs(`Deploying app container ${finalAppImage} listening on port ${project.app_port}...`);
     await orchestration.deployApp(
       project.owner_id,
@@ -292,7 +311,14 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
       finalAppImage,
       project.app_port,
       envVars,
-      dbConn
+      dbConn,
+      {
+        probeUrl: `http://${project.subdomain}.localhost`,
+        timeoutSeconds: 30,
+        onProgress: async (msg) => {
+          await appendLogs(msg);
+        }
+      }
     );
 
     // Update DB status to active
@@ -1414,15 +1440,112 @@ app.get('/api/github/repos/:owner/:repo/branches', loadCurrentUser, async (req, 
   }
 });
 
+// --- REAL-TIME TELEMETRY & RUNTIME STATS ---
+
+app.get('/api/projects/:project_id/telemetry', loadCurrentUser, async (req, res) => {
+  try {
+    const projRes = await db.query(
+      'SELECT id, name, subdomain, app_port, status FROM projects WHERE id = $1 AND owner_id = $2',
+      [req.params.project_id, req.currentUser.id]
+    );
+    if (projRes.rows.length === 0) {
+      return res.status(404).json({ detail: "Project not found" });
+    }
+    const telemetry = await orchestration.getContainerTelemetry(req.params.project_id);
+    res.json(telemetry);
+  } catch (err) {
+    console.error("Telemetry error:", err);
+    res.status(500).json({ detail: "Failed to query container telemetry" });
+  }
+});
+
+// --- NATURAL LANGUAGE SECRET & ENV INJECTION ROUTE ---
+
+app.post('/api/projects/:project_id/env', loadCurrentUser, async (req, res) => {
+  try {
+    const { env_vars, app_port } = req.body;
+    const projRes = await db.query(
+      'SELECT * FROM projects WHERE id = $1 AND owner_id = $2',
+      [req.params.project_id, req.currentUser.id]
+    );
+    if (projRes.rows.length === 0) {
+      return res.status(404).json({ detail: "Project not found" });
+    }
+    const project = projRes.rows[0];
+
+    // Update app port if specified
+    if (app_port && app_port !== project.app_port) {
+      await db.query('UPDATE projects SET app_port = $1 WHERE id = $2', [app_port, project.id]);
+      project.app_port = app_port;
+    }
+
+    // Retrieve latest deployment to get app image and existing envs
+    const depRes = await db.query(
+      'SELECT * FROM deployments WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [project.id]
+    );
+    const latestDeploy = depRes.rows[0];
+    const currentImage = latestDeploy ? latestDeploy.app_image : (project.github_repo ? `zynkara-local-${project.id.replace(/-/g, '')}:latest` : 'nginx:alpine');
+    const existingEnvs = (latestDeploy && latestDeploy.env_vars) ? latestDeploy.env_vars : {};
+    const mergedEnvs = { ...existingEnvs, ...(env_vars || {}) };
+
+    // Update deployment record with merged environment map
+    if (latestDeploy) {
+      await db.query('UPDATE deployments SET env_vars = $1 WHERE id = $2', [JSON.stringify(mergedEnvs), latestDeploy.id]);
+    }
+
+    // Zero-downtime rolling restart with newly injected environment variables
+    await orchestration.deployApp(
+      project.owner_id,
+      project.id,
+      project.subdomain,
+      currentImage,
+      project.app_port,
+      mergedEnvs,
+      {},
+      {
+        probeUrl: `http://${project.subdomain}.localhost`,
+        timeoutSeconds: 15,
+        onProgress: console.log
+      }
+    );
+
+    res.json({
+      message: "Variables injected and container gracefully restarted",
+      env_vars: mergedEnvs,
+      app_port: project.app_port
+    });
+  } catch (err) {
+    console.error("Environment injection error:", err);
+    res.status(500).json({ detail: `Failed to inject environment variables: ${err.message}` });
+  }
+});
+
 // --- CHATBOT ASSISTANT ---
 
-app.post('/api/chat', loadCurrentUser, (req, res) => {
+app.post('/api/chat', loadCurrentUser, async (req, res) => {
   const { message } = req.body;
   if (!message) {
     return res.status(400).json({ detail: "Message text is required" });
   }
 
-  const { reply, actionPayload } = parseChatbotIntent(message);
+  // Retrieve user projects to provide contextual intent matching
+  let userProjects = [];
+  try {
+    const projQuery = await db.query(
+      'SELECT id, name, subdomain, app_port, status, github_repo FROM projects WHERE owner_id = $1 ORDER BY created_at DESC',
+      [req.currentUser.id]
+    );
+    userProjects = projQuery.rows;
+  } catch (e) {
+    console.warn("Failed to load user projects for chat context:", e);
+  }
+
+  const { reply, actionPayload } = await parseChatbotIntent(message, {
+    projects: userProjects,
+    telemetryService: orchestration
+  });
+
   res.json({ reply, action_payload: actionPayload });
 });
 
