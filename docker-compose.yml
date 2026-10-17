@@ -42,7 +42,7 @@ services:
       - VOLUMES_BASE_PATH=/var/zynkara/volumes
       - PLATFORM_DOMAIN=${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}
     ports:
-      - "127.0.0.1:8000:8000" # Localhost only, all external traffic routed via Traefik
+      - "8000:8000" # Expose direct access on port 8000
     depends_on:
       postgres-control:
         condition: service_healthy
@@ -50,8 +50,8 @@ services:
       - zynkara-traefik-net
     labels:
       - "traefik.enable=true"
-      # Route zynkara.localhost or wildcard/main domain to this API (serving dashboard)
-      - "traefik.http.routers.control-plane.rule=Host(`zynkara.localhost`) || Host(`${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`) || Host(`zynkara.${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`)"
+      # Route zynkara.localhost or wildcard/main domain or raw IP to this API (serving dashboard)
+      - "traefik.http.routers.control-plane.rule=Host(`zynkara.localhost`) || Host(`172.198.75.211`) || Host(`${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`) || Host(`zynkara.${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`)"
       - "traefik.http.routers.control-plane.entrypoints=web,websecure"
       - "traefik.http.services.control-plane.loadbalancer.server.port=8000"
 

@@ -42,6 +42,7 @@ app.set('trust proxy', 1);
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
+  hsts: false, // Don't force HTTPS HSTS headers until SSL certificates are provisioned
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -50,7 +51,8 @@ app.use(helmet({
       fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "data:", "https:", "http:"],
       connectSrc: ["'self'", "https:", "http:", "ws:", "wss:"],
-      frameSrc: ["'self'", "https://checkout.stripe.com", "https://api.razorpay.com"]
+      frameSrc: ["'self'", "https://checkout.stripe.com", "https://api.razorpay.com"],
+      upgradeInsecureRequests: null
     }
   }
 }));
