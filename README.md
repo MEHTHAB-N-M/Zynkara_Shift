@@ -6,14 +6,14 @@ A zero-cost, self-hosted, multi-tenant Platform-as-a-Service. Deploy apps and da
   <img src="docs/zynkarashift_demo.webp" alt="ZynkaraShift Platform Demo" width="100%" />
 </p>
 
-ZynkaraShift runs on a local Linux or Windows host using Docker Desktop. It combines outbound Cloudflare Tunnels (public access without opening ports), Traefik (dynamic subdomain routing via Docker labels), Docker container orchestration with memory/CPU hard caps, and a subscription gateway that limits free users to 3 active projects.
+ZynkaraShift runs on a local Linux or Windows host using Docker Desktop. It combines Traefik (dynamic subdomain routing via Docker labels), Docker container orchestration with memory/CPU hard caps, and a subscription gateway that limits free users to 3 active projects.
 
 ## ✨ Key Features
 
 - 🚀 **One-click deployment** of apps from Docker images
 - 🤖 **AI deployment assistant** (e.g. "Deploy image nginx:alpine name app-1")
 - 🌐 **Automatic subdomain** per project via Traefik, with no restarts
-- 🔒 **Zero open ports** on your machine, using an outbound Cloudflare Tunnel
+- 🔒 **Isolated container networking** with strict per-project private bridge networks
 - 🗄️ **Isolated databases** per project (Postgres, MySQL, MongoDB, Redis)
 - 📏 **Hard resource caps:** 512 MB RAM and 0.5 CPU per container
 - 💳 **Free tier (3 projects)** with a simulated Stripe upgrade flow
@@ -25,7 +25,6 @@ ZynkaraShift runs on a local Linux or Windows host using Docker Desktop. It comb
 | **Control plane API** | Python, FastAPI, Docker SDK |
 | **Database** | PostgreSQL |
 | **Reverse proxy** | Traefik |
-| **Public access** | Cloudflare Tunnel (`cloudflared`) |
 | **Containers** | Docker, Docker Compose |
 | **Frontend** | JavaScript (React, Vite) |
 | **CI/CD** | GitHub Actions |
@@ -49,21 +48,7 @@ Secure traffic routing from public clients to isolated containerized services:
 │      Public Web Client       │
 └──────────────┬───────────────┘
                │
-               │ HTTPS (Wildcard: *.zynkarashift.duckdns.org)
-               ▼
-┌──────────────────────────────┐
-│   Cloudflare Edge Network    │
-│  (Wildcard Edge SSL Certs)   │
-└──────────────┬───────────────┘
-               │
-               │ Encrypted Tunnel Protocol (Outbound Connection)
-               ▼
-┌──────────────────────────────┐
-│  cloudflared Tunnel Daemon   │
-│   (Internal Docker Network)  │
-└──────────────┬───────────────┘
-               │
-               │ HTTP (Forwarded internally)
+               │ HTTP (Wildcard: *.zynkarashift.duckdns.org / localhost)
                ▼
 ┌──────────────────────────────┐
 │    Traefik Reverse Proxy     │
@@ -92,8 +77,7 @@ Secure traffic routing from public clients to isolated containerized services:
 ## 2. Infrastructure Design Highlights
 
 ### Networking & Reverse Proxy Hardening
-- **Cloudflare Tunnel (`cloudflared`):** Establishes a secure, outbound connection to the Cloudflare network, pulling in traffic for your wildcard domain (e.g. `*.zynkarashift.duckdns.org`). This removes the need to expose ports to the public internet or configure host firewalls.
-- **Dynamic Traefik Subdomains:** Traefik listens on `/var/run/docker.sock` and automatically discovers newly created application containers. Based on labels injected by the Python orchestration service (e.g. `traefik.http.routers.zynkarashift-router-{id}.rule=Host(...)`), Traefik maps the custom subdomain without restarting.
+- **Dynamic Traefik Subdomains:** Traefik listens on `/var/run/docker.sock` and automatically discovers newly created application containers. Based on labels injected by the orchestration service (e.g. `traefik.http.routers.zynkarashift-router-{id}.rule=Host(...)`), Traefik maps the custom subdomain without restarting.
 - **Container Isolation (Dual-Network Architecture):**
   - The application container is attached to both `zynkarashift-traefik-net` (so Traefik can proxy HTTP traffic to it) and `zynkarashift-net-{project_id}` (so it can query its database).
   - The database container (Postgres, MySQL, MongoDB, or Redis) is **only** attached to the isolated project network `zynkarashift-net-{project_id}`.
@@ -136,7 +120,6 @@ The seeded demo credentials below are for local testing only. Change or remove t
 
 ### Prerequisites
 - Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows or Linux.
-- Optional: a Cloudflare Tunnel token to run on a public domain. Without it, the platform resolves locally at `http://zynkarashift.localhost` via Traefik.
 
 ### Startup Instructions
 1. **Clone the repository:**
@@ -147,11 +130,7 @@ The seeded demo credentials below are for local testing only. Change or remove t
 
 2. **Start the control plane:**
    ```bash
-   # Local only (resolves on http://zynkarashift.localhost)
    docker compose up -d
-
-   # Or with your Cloudflare Tunnel token
-   TUNNEL_TOKEN="your_token_here" docker compose up -d
    ```
 
 3. Open `http://localhost:8000` or `http://zynkarashift.localhost` to access the dashboard.

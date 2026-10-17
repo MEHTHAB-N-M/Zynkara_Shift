@@ -72,18 +72,6 @@ services:
     networks:
       - zynkara-traefik-net
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: zynkara-cloudflared
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    depends_on:
-      - traefik
-    networks:
-      - zynkara-traefik-net
-
 
 networks:
   zynkara-traefik-net:

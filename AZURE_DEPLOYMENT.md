@@ -142,7 +142,7 @@ This script will:
 3. Create `/var/zynkara/volumes` for tenant database persistence
 4. Build the React frontend → `frontend/dist/`
 5. Pull all Docker images
-6. Start all 4 services (PostgreSQL, API, Traefik, cloudflared)
+6. Start all 3 services (PostgreSQL, API, Traefik)
 7. Wait for PostgreSQL health check
 
 ---
@@ -158,7 +158,6 @@ docker compose ps
 # zynkara-postgres-control      Up (healthy)
 # zynkara-control-plane-api     Up
 # zynkara-traefik               Up
-# zynkara-cloudflared           Up
 
 # View logs
 docker compose logs -f control-plane-api
