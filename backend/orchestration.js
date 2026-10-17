@@ -285,6 +285,8 @@ class OrchestrationService {
       "traefik.enable": "true",
       [`traefik.http.routers.zynkara-${projectId}.rule`]: `Host(\`${subdomain}.localhost\`) || Host(\`${subdomain}.${this.platformDomain}\`)`,
       [`traefik.http.routers.zynkara-${projectId}.entrypoints`]: "web,websecure",
+      [`traefik.http.routers.zynkara-${projectId}.tls`]: "true",
+      [`traefik.http.routers.zynkara-${projectId}.tls.certresolver`]: "letsencrypt",
       [`traefik.http.services.zynkara-${projectId}.loadbalancer.server.port`]: String(appPort),
       "traefik.docker.network": this.traefikNetwork
     };

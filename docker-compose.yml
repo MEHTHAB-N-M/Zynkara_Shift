@@ -62,6 +62,8 @@ services:
       # Route zynkara.localhost or wildcard/main domain or raw IP to this API (serving dashboard)
       - "traefik.http.routers.control-plane.rule=Host(`zynkara.localhost`) || Host(`172.198.75.211`) || Host(`${PLATFORM_DOMAIN:-zynkarashift.me}`) || Host(`www.${PLATFORM_DOMAIN:-zynkarashift.me}`) || Host(`zynkara.${PLATFORM_DOMAIN:-zynkarashift.me}`)"
       - "traefik.http.routers.control-plane.entrypoints=web,websecure"
+      - "traefik.http.routers.control-plane.tls=true"
+      - "traefik.http.routers.control-plane.tls.certresolver=letsencrypt"
       - "traefik.http.services.control-plane.loadbalancer.server.port=8000"
 
   traefik:
@@ -72,13 +74,19 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-mehthab077@gmail.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
     ports:
       - "80:80"       # Public HTTP
       - "443:443"     # Public HTTPS
       - "127.0.0.1:8080:8080" # Traefik dashboard bound strictly to localhost
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certificates:/letsencrypt
     networks:
       - zynkara-traefik-net
 
@@ -91,3 +99,4 @@ networks:
 volumes:
   postgres_control_data:
   zynkara_dynamic_volumes:
+  traefik_certificates:
