@@ -16,7 +16,7 @@ set -euo pipefail
 
 # ── Configuration (customize these) ──────────────────────────────────────────
 RESOURCE_GROUP="rg-zynkarashift"
-LOCATION="eastus"                     # Pick closest to you: eastus, westeurope, southeastasia
+LOCATION="centralindia"                 # Allowed region (centralindia, indiasouthcentral, koreacentral, eastasia)
 VM_NAME="zynkarashift-vm"
 VM_SIZE="Standard_B2s"               # 2 vCPU, 4 GB RAM — fits Azure Student free tier
 VM_IMAGE="Canonical:ubuntu-24_04-lts:server:latest"
