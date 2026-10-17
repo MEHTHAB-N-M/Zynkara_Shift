@@ -6,7 +6,7 @@ class OrchestrationService {
   constructor() {
     this.volumesBasePath = process.env.VOLUMES_BASE_PATH || '/var/zynkara/volumes';
     this.traefikNetwork = process.env.TRAEFIK_NETWORK || 'zynkara-traefik-net';
-    this.platformDomain = process.env.PLATFORM_DOMAIN || 'zynkrashift.me';
+    this.platformDomain = process.env.PLATFORM_DOMAIN || 'zynkarashift.me';
     
     try {
       this.docker = new Docker();

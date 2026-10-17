@@ -30,7 +30,7 @@ const cookieParser = require('cookie-parser');
 const app = express();
 const PORT = process.env.PORT || 8000;
 const SECRET_KEY = process.env.JWT_SECRET || 'zynkara_secure_jwt_secret_key_default';
-const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN || 'zynkrashift.me';
+const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN || 'zynkarashift.me';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || '';
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
 
