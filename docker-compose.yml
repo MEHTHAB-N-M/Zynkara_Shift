@@ -43,6 +43,8 @@ services:
       - PLATFORM_DOMAIN=${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     ports:
       - "8000:8000" # Expose direct access on port 8000
     depends_on:
