@@ -242,7 +242,7 @@ export default function App() {
 
   // Dashboard & Projects States
   const [projects, setProjects] = useState([]);
-  const [platformDomain, setPlatformDomain] = useState('zynkarashift.duckdns.org');
+  const [platformDomain, setPlatformDomain] = useState('zynkrashift.me');
 
   // Logs Modal States
   const [activeLogsProjectId, setActiveLogsProjectId] = useState(null);
