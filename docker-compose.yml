@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432" # Bind to localhost only (prevents public internet port scanning)
     volumes:
       - postgres_control_data:/var/lib/postgresql/data
     networks:
@@ -42,7 +42,7 @@ services:
       - VOLUMES_BASE_PATH=/var/zynkara/volumes
       - PLATFORM_DOMAIN=${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000" # Localhost only, all external traffic routed via Traefik
     depends_on:
       postgres-control:
         condition: service_healthy
@@ -52,7 +52,7 @@ services:
       - "traefik.enable=true"
       # Route zynkara.localhost or wildcard/main domain to this API (serving dashboard)
       - "traefik.http.routers.control-plane.rule=Host(`zynkara.localhost`) || Host(`${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`) || Host(`zynkara.${PLATFORM_DOMAIN:-zynkarashift.duckdns.org}`)"
-      - "traefik.http.routers.control-plane.entrypoints=web"
+      - "traefik.http.routers.control-plane.entrypoints=web,websecure"
       - "traefik.http.services.control-plane.loadbalancer.server.port=8000"
 
   traefik:
@@ -60,13 +60,14 @@ services:
     container_name: zynkara-traefik
     restart: unless-stopped
     command:
-      - "--api.insecure=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
     ports:
-      - "80:80" # Public HTTP traffic maps to 80
-      - "8080:8080" # Traefik dashboard
+      - "80:80"       # Public HTTP
+      - "443:443"     # Public HTTPS
+      - "127.0.0.1:8080:8080" # Traefik dashboard bound strictly to localhost
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:

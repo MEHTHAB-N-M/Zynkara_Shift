@@ -227,7 +227,9 @@ class OrchestrationService {
         RestartPolicy: { Name: 'unless-stopped' },
         Binds: [`${hostVolumePath}:${containerDbPath}:rw`],
         Memory: 512 * 1024 * 1024,
-        NanoCpus: 500000000 // 0.5 CPU core
+        NanoCpus: 500000000, // 0.5 CPU core
+        SecurityOpt: ['no-new-privileges:true'],
+        PidsLimit: 150
       }
     });
 
@@ -270,7 +272,7 @@ class OrchestrationService {
     const traefikLabels = {
       "traefik.enable": "true",
       [`traefik.http.routers.zynkara-${projectId}.rule`]: `Host(\`${subdomain}.localhost\`) || Host(\`${subdomain}.${this.platformDomain}\`)`,
-      [`traefik.http.routers.zynkara-${projectId}.entrypoints`]: "web",
+      [`traefik.http.routers.zynkara-${projectId}.entrypoints`]: "web,websecure",
       [`traefik.http.services.zynkara-${projectId}.loadbalancer.server.port`]: String(appPort),
       "traefik.docker.network": this.traefikNetwork
     };
@@ -285,7 +287,10 @@ class OrchestrationService {
         NetworkMode: projectNetName,
         RestartPolicy: { Name: 'unless-stopped' },
         Memory: 512 * 1024 * 1024,
-        NanoCpus: 500000000 // 0.5 CPU core
+        NanoCpus: 500000000, // 0.5 CPU core
+        SecurityOpt: ['no-new-privileges:true'],
+        PidsLimit: 100, // Prevents fork bombs
+        CapDrop: ['MKNOD', 'SYS_RAWIO', 'SYS_ADMIN', 'NET_ADMIN']
       }
     });
 

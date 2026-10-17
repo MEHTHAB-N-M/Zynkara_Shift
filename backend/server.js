@@ -23,6 +23,9 @@ const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecret ? require('stripe')(stripeSecret) : null;
 
 
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
 const app = express();
 const PORT = process.env.PORT || 8000;
 const SECRET_KEY = process.env.JWT_SECRET || 'zynkara_secure_jwt_secret_key_default';
@@ -31,6 +34,54 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || '';
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
 
 const orchestration = new OrchestrationService();
+
+// Trust reverse proxy (Traefik) for accurate client IP detection & rate limiting
+app.set('trust proxy', 1);
+
+// Security Headers via Helmet
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net", "https://checkout.stripe.com", "https://checkout.razorpay.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"],
+      imgSrc: ["'self'", "data:", "https:", "http:"],
+      connectSrc: ["'self'", "https:", "http:", "ws:", "wss:"],
+      frameSrc: ["'self'", "https://checkout.stripe.com", "https://api.razorpay.com"]
+    }
+  }
+}));
+
+// Rate Limiters for DDoS & Brute-Force Protection
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300, // Limit each IP to 300 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { detail: "Too many requests from this IP. Please try again after 15 minutes." }
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Strict limit: max 20 login/register attempts per 15 mins to prevent brute-forcing
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { detail: "Too many authentication attempts. Please try again after 15 minutes." }
+});
+
+const deployLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 30, // Limit deployments to 30 per hour per IP to prevent container resource exhaustion
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { detail: "Deployment rate limit reached. Please wait before deploying again." }
+});
+
+// Apply general rate limiter across all API routes
+app.use('/api/', generalLimiter);
 
 // Middleware
 app.use(cors());
@@ -74,7 +125,8 @@ app.post('/api/subscription/webhook', express.raw({ type: 'application/json' }),
   res.json({ received: true });
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // Load current user from JWT token
 async function loadCurrentUser(req, res, next) {
@@ -341,7 +393,7 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
 
 // --- AUTH ENDPOINTS ---
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ detail: "Email and password are required" });
@@ -393,7 +445,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-app.post('/api/auth/verify', async (req, res) => {
+app.post('/api/auth/verify', authLimiter, async (req, res) => {
   const { email, code } = req.body;
   if (!email || !code) {
     return res.status(400).json({ detail: "Email and verification code are required" });
@@ -448,7 +500,7 @@ app.post('/api/auth/verify', async (req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ detail: "Email and password are required" });
@@ -932,7 +984,7 @@ app.post('/api/subscription/create-checkout-session', loadCurrentUser, async (re
 
 // --- PROJECT ENDPOINTS ---
 
-app.post('/api/projects', loadCurrentUser, async (req, res) => {
+app.post('/api/projects', deployLimiter, loadCurrentUser, async (req, res) => {
   const { name, app_image, db_type, github_repo, github_branch, github_token, env_vars, app_port } = req.body;
 
   // Security checks on input parameters
