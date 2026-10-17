@@ -1,36 +1,58 @@
 const nodemailer = require('nodemailer');
 
-// Load environment variables for mailer
-const SMTP_HOST = process.env.SMTP_HOST || '';
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASS = process.env.SMTP_PASS || '';
-const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@zynkarashift.local';
+/**
+ * Check whether SMTP credentials are fully provided in environment variables.
+ */
+function isSmtpConfigured() {
+  return !!(
+    process.env.SMTP_HOST &&
+    process.env.SMTP_USER &&
+    process.env.SMTP_PASS
+  );
+}
 
-let transporter = null;
+/**
+ * Build a Nodemailer transport using current environment configuration.
+ */
+function getTransporter() {
+  if (!isSmtpConfigured()) {
+    return null;
+  }
 
-// Initialize transporter only if credentials are set
-if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // true for 465, false for other ports
+  const host = process.env.SMTP_HOST.trim();
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const user = process.env.SMTP_USER.trim();
+  const pass = process.env.SMTP_PASS.trim();
+
+  return nodemailer.createTransport({
+    host: host,
+    port: port,
+    secure: port === 465, // true for port 465 (SSL), false for other ports (TLS/STARTTLS)
     auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
+      user: user,
+      pass: pass,
     },
   });
 }
 
 /**
  * Send a verification email containing a 6-digit OTP code.
- * Falls back to logging the code to the console for local development.
+ * Fails closed if SMTP is not configured or if transmission fails.
  * @param {string} email
  * @param {string} code
  */
 async function sendVerificationEmail(email, code) {
+  if (!isSmtpConfigured()) {
+    const err = new Error("Email verification is not currently configured. Please contact the administrator.");
+    err.code = 'SMTP_NOT_CONFIGURED';
+    throw err;
+  }
+
+  const transporter = getTransporter();
+  const smtpFrom = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@zynkarashift.local';
+
   const mailOptions = {
-    from: `"ZynkaraShift" <${SMTP_FROM}>`,
+    from: `"ZynkaraShift" <${smtpFrom}>`,
     to: email,
     subject: 'Verify Your Email - ZynkaraShift',
     html: `
@@ -45,28 +67,18 @@ async function sendVerificationEmail(email, code) {
     `,
   };
 
-  if (transporter) {
-    try {
-      await transporter.sendMail(mailOptions);
-      console.log(`[MAILER] Sent verification email to ${email}`);
-      return;
-    } catch (err) {
-      console.error('[MAILER] Failed to send verification email, falling back to console:', err);
-    }
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`[MAILER] Sent verification email to ${email}`);
+  } catch (err) {
+    console.error(`[MAILER] Failed to deliver verification email to ${email}:`, err);
+    const deliveryErr = new Error("Failed to deliver verification email. Please check the email address or contact the administrator.");
+    deliveryErr.code = 'SMTP_DELIVERY_FAILED';
+    throw deliveryErr;
   }
-
-  // Developer Fallback Console Output
-  console.log(`
-========================================================================
-[DEV MAILER FALLBACK]
-TO: ${email}
-SUBJECT: Verify Your Email - ZynkaraShift
-VERIFICATION CODE: ${code}
-(Please configure SMTP env variables in backend/.env for real emails)
-========================================================================
-  `);
 }
 
 module.exports = {
+  isSmtpConfigured,
   sendVerificationEmail
 };

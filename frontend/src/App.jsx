@@ -224,8 +224,10 @@ export default function App() {
   // Authentication & Session States
   const [token, setToken] = useState(localStorage.getItem('zynkara_token') || null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
   const [authError, setAuthError] = useState('');
   const [authVerificationRequired, setAuthVerificationRequired] = useState(false);
@@ -612,8 +614,21 @@ export default function App() {
     e.preventDefault();
     setAuthError('');
 
-    // Frontend validation for register domain
+    // Frontend validation for registration
     if (authMode === 'register') {
+      if (!authName.trim() || authName.trim().length < 2) {
+        setAuthError("Please enter your name (at least 2 characters).");
+        return;
+      }
+      if (authName.trim().length > 100) {
+        setAuthError("Name must not exceed 100 characters.");
+        return;
+      }
+      if (authPassword !== authConfirmPassword) {
+        setAuthError("Passwords do not match.");
+        return;
+      }
+
       const parts = authEmail.split('@');
       if (parts.length === 2) {
         const domain = parts[1].trim().toLowerCase();
@@ -635,12 +650,15 @@ export default function App() {
     }
 
     const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const payload = authMode === 'login'
+      ? { email: authEmail, password: authPassword }
+      : { name: authName.trim(), email: authEmail, password: authPassword };
 
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authEmail, password: authPassword })
+        body: JSON.stringify(payload)
       });
 
       let data = {};
@@ -672,12 +690,8 @@ export default function App() {
       } else {
         setVerificationEmail(authEmail);
         setAuthVerificationRequired(true);
-        if (data.dev_code) {
-          setVerificationCode(data.dev_code);
-          showToast(`Verification code: ${data.dev_code}`, 'info');
-        } else {
-          showToast('Verification code sent! Please verify your email.', 'info');
-        }
+        setVerificationCode('');
+        showToast('Verification code sent! Please check your email.', 'info');
       }
     } catch (err) {
       setAuthError(err.message);
@@ -724,11 +738,11 @@ export default function App() {
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: verificationEmail, password: authPassword })
+        body: JSON.stringify({ name: authName.trim() || verificationEmail.split('@')[0], email: verificationEmail, password: authPassword })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Failed to resend code');
-      showToast('Verification code resent!', 'success');
+      showToast('Verification code resent! Please check your email.', 'success');
     } catch (err) {
       setAuthError(err.message);
     }
@@ -1182,11 +1196,24 @@ export default function App() {
             ) : !authVerificationRequired ? (
               <>
                 <div className="auth-tabs">
-                  <button className={`tab-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => setAuthMode('login')}>Sign In</button>
-                  <button className={`tab-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => setAuthMode('register')}>Register</button>
+                  <button className={`tab-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); setAuthError(''); }}>Sign In</button>
+                  <button className={`tab-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => { setAuthMode('register'); setAuthError(''); }}>Register</button>
                 </div>
 
                 <form onSubmit={handleAuthSubmit}>
+                  {authMode === 'register' && (
+                    <div className="input-group">
+                      <label htmlFor="auth-name"><i className="fa-solid fa-user"></i> Full Name</label>
+                      <input
+                        type="text"
+                        id="auth-name"
+                        required
+                        placeholder="John Doe"
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                      />
+                    </div>
+                  )}
                   <div className="input-group">
                     <label htmlFor="auth-email"><i className="fa-solid fa-envelope"></i> Email Address</label>
                     <input
@@ -1209,6 +1236,19 @@ export default function App() {
                       onChange={(e) => setAuthPassword(e.target.value)}
                     />
                   </div>
+                  {authMode === 'register' && (
+                    <div className="input-group">
+                      <label htmlFor="auth-confirm-password"><i className="fa-solid fa-shield-halved"></i> Confirm Password</label>
+                      <input
+                        type="password"
+                        id="auth-confirm-password"
+                        required
+                        placeholder="••••••••"
+                        value={authConfirmPassword}
+                        onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                      />
+                    </div>
+                  )}
                   <button type="submit" className="btn btn-primary btn-block">
                     <span>{authMode === 'login' ? 'Sign In' : 'Request Access'}</span> <i className="fa-solid fa-arrow-right"></i>
                   </button>
@@ -1236,8 +1276,8 @@ export default function App() {
                     We've sent a 6-digit verification code to <br />
                     <strong style={{ color: '#fff' }}>{verificationEmail}</strong>.
                   </p>
-                  <p style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '6px', lineHeight: '1.4' }}>
-                    Note: If you are testing locally, the code is also printed in the server logs.
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px', lineHeight: '1.4' }}>
+                    Please check your inbox and spam folder for your confirmation code.
                   </p>
                 </div>
                 <div className="input-group">
@@ -1280,7 +1320,7 @@ export default function App() {
             </div>
             <div className="header-user">
               <div className="user-info">
-                <div className="user-email">{currentUser.email}</div>
+                <div className="user-email">{currentUser.name ? `${currentUser.name} (${currentUser.email})` : currentUser.email}</div>
                 <div className="user-tier">
                   <span className={`badge ${currentUser.subscription_status === 'premium' ? 'badge-premium' : 'badge-free'}`}>
                     {currentUser.subscription_status === 'premium' ? 'Premium Plan' : 'Free Tier (3 Max)'}
@@ -2107,7 +2147,7 @@ export default function App() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <span style={{ fontWeight: 600, color: '#f8fafc', fontSize: '14px', wordBreak: 'break-all' }}>
-                            {req.email}
+                            {req.name ? `${req.name} • ${req.email}` : req.email}
                           </span>
                           {req.oauth_provider && (
                             <span className="badge badge-beta" style={{ fontSize: '10px' }}>

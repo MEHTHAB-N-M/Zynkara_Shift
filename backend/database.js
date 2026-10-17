@@ -39,6 +39,7 @@ async function initializeDatabase() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY,
+        name VARCHAR(100),
         email VARCHAR(255) UNIQUE NOT NULL,
         hashed_password VARCHAR(255) NOT NULL,
         subscription_status VARCHAR(50) DEFAULT 'free' NOT NULL,
@@ -53,7 +54,8 @@ async function initializeDatabase() {
       );
     `);
 
-    // Ensure github connection, verification, access_status, and is_admin columns exist on users table
+    // Ensure name, github connection, verification, access_status, and is_admin columns exist on users table
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(100);`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS access_status VARCHAR(20) DEFAULT 'pending' NOT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE NOT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token VARCHAR(255);`);
@@ -61,17 +63,20 @@ async function initializeDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE NOT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_provider VARCHAR(50);`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_id VARCHAR(255);`);
+    await client.query(`UPDATE users SET name = split_part(email, '@', 1) WHERE name IS NULL OR name = '';`);
 
     // Create Pending Registrations table
     await client.query(`
       CREATE TABLE IF NOT EXISTS pending_registrations (
         email VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(100),
         hashed_password VARCHAR(255) NOT NULL,
         verification_token VARCHAR(255) NOT NULL,
         verification_expires TIMESTAMP WITH TIME ZONE NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
       );
     `);
+    await client.query(`ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS name VARCHAR(100);`);
     
     // Create Projects table
     await client.query(`

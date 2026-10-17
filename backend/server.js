@@ -17,7 +17,8 @@ const OrchestrationService = require('./orchestration');
 const { parseChatbotIntent } = require('./chat');
 const { detectFramework, synthesizeDockerfile } = require('./buildpacks');
 const dns = require('dns').promises;
-const { sendVerificationEmail } = require('./mailer');
+const { sendVerificationEmail, isSmtpConfigured } = require('./mailer');
+const disposableDomainsSet = new Set(require('disposable-email-domains'));
 const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecret ? require('stripe')(stripeSecret) : null;
 
@@ -298,6 +299,20 @@ async function validateEmailDomain(email) {
 
   const domain = parts[1].trim().toLowerCase();
 
+  // Specific check for local test domains (e.g. unit/integration testing)
+  const isLocalDomain = domain === 'localhost' || domain === 'zynkara.local' || domain.endsWith('.local') || domain.endsWith('.localhost');
+  if (isLocalDomain) {
+    return { valid: true };
+  }
+
+  // Reject disposable / temporary email domains immediately
+  if (disposableDomainsSet.has(domain)) {
+    return {
+      valid: false,
+      detail: "Disposable/temporary email addresses are not allowed. Please use a real email address."
+    };
+  }
+
   // Whitelisted common domains
   const whitelistedDomains = [
     'gmail.com', 'googlemail.com',
@@ -307,13 +322,10 @@ async function validateEmailDomain(email) {
     'example.com'
   ];
 
-  // Specific check for local test domains
-  const isLocalDomain = domain === 'localhost' || domain === 'zynkara.local' || domain.endsWith('.local') || domain.endsWith('.localhost');
-
   const isWhitelisted = whitelistedDomains.includes(domain) || whitelistedDomains.some(d => domain.endsWith('.' + d));
 
-  // If local domain or directly whitelisted, accept immediately
-  if (isLocalDomain || isWhitelisted) {
+  // If directly whitelisted, accept immediately
+  if (isWhitelisted) {
     return { valid: true };
   }
 
@@ -557,17 +569,29 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
 // --- AUTH ENDPOINTS ---
 
 app.post('/api/auth/register', authLimiter, async (req, res) => {
-  const { email, password } = req.body;
+  const { name, email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ detail: "Email and password are required" });
   }
 
+  const cleanName = typeof name === 'string' ? name.trim() : '';
+  if (!cleanName || cleanName.length < 2 || cleanName.length > 100) {
+    return res.status(400).json({ detail: "Name is required (between 2 and 100 characters)." });
+  }
+
   const cleanEmail = email.trim().toLowerCase();
 
-  // Validate email domain & MX records
+  // Validate email domain & MX records (and reject disposable emails)
   const domainValidation = await validateEmailDomain(cleanEmail);
   if (!domainValidation.valid) {
     return res.status(400).json({ detail: domainValidation.detail });
+  }
+
+  // Fail closed if SMTP is not configured
+  if (!isSmtpConfigured()) {
+    return res.status(503).json({
+      detail: "Email verification is not currently configured. Please contact the administrator."
+    });
   }
 
   try {
@@ -584,23 +608,29 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 3. Save to pending_registrations (insert or update on conflict)
+    // 3. Save to pending_registrations with name (insert or update on conflict)
     await db.query(
-      `INSERT INTO pending_registrations (email, hashed_password, verification_token, verification_expires) 
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO pending_registrations (email, name, hashed_password, verification_token, verification_expires) 
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (email) 
-       DO UPDATE SET hashed_password = $2, verification_token = $3, verification_expires = $4`,
-      [cleanEmail, hashedPassword, verificationCode, expiresAt]
+       DO UPDATE SET name = $2, hashed_password = $3, verification_token = $4, verification_expires = $5`,
+      [cleanEmail, cleanName, hashedPassword, verificationCode, expiresAt]
     );
 
-    // 4. Send verification email
-    await sendVerificationEmail(cleanEmail, verificationCode);
+    // 4. Send verification email via SMTP (fails closed if delivery fails)
+    try {
+      await sendVerificationEmail(cleanEmail, verificationCode);
+    } catch (mailErr) {
+      await db.query('DELETE FROM pending_registrations WHERE email = $1', [cleanEmail]);
+      return res.status(500).json({
+        detail: mailErr.message || "Failed to send verification email. Please try again later."
+      });
+    }
 
     res.json({
       email: cleanEmail,
       requires_verification: true,
-      message: "Verification code sent to your email address.",
-      dev_code: !process.env.SMTP_HOST ? verificationCode : undefined
+      message: "Verification code sent to your email address."
     });
   } catch (err) {
     console.error("Registration error:", err);
@@ -635,12 +665,13 @@ app.post('/api/auth/verify', authLimiter, async (req, res) => {
       return res.status(400).json({ detail: "Verification code has expired. Please request a new code." });
     }
 
-    // 3. Move user to active users table with pending access status
+    // 3. Move user to active users table with pending access status, carrying over name
     const userId = crypto.randomUUID();
+    const userName = record.name || cleanEmail.split('@')[0];
     await db.query(
-      `INSERT INTO users (id, email, hashed_password, subscription_status, access_status, is_admin, is_verified) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [userId, cleanEmail, record.hashed_password, 'free', 'pending', false, true]
+      `INSERT INTO users (id, name, email, hashed_password, subscription_status, access_status, is_admin, is_verified) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [userId, userName, cleanEmail, record.hashed_password, 'free', 'pending', false, true]
     );
 
     // 4. Delete from pending registrations
@@ -652,6 +683,7 @@ app.post('/api/auth/verify', authLimiter, async (req, res) => {
       access_status: "pending",
       user: {
         id: userId,
+        name: userName,
         email: cleanEmail,
         access_status: "pending"
       }
@@ -719,6 +751,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       token_type: "bearer",
       user: {
         id: user.id,
+        name: user.name,
         email: user.email,
         subscription_status: user.subscription_status,
         access_status: user.access_status,
@@ -734,6 +767,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 app.get('/api/auth/me', loadCurrentUser, (req, res) => {
   res.json({
     id: req.currentUser.id,
+    name: req.currentUser.name,
     email: req.currentUser.email,
     subscription_status: req.currentUser.subscription_status,
     access_status: req.currentUser.access_status,
@@ -750,6 +784,7 @@ app.post('/api/auth/refresh', loadCurrentUser, (req, res) => {
     token_type: "bearer",
     user: {
       id: req.currentUser.id,
+      name: req.currentUser.name,
       email: req.currentUser.email,
       subscription_status: req.currentUser.subscription_status,
       access_status: req.currentUser.access_status,
@@ -768,7 +803,7 @@ app.post('/api/auth/logout', (req, res) => {
 app.get('/api/admin/access-requests', loadCurrentUser, requireAdmin, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT id, email, subscription_status, access_status, is_admin, oauth_provider, created_at 
+      `SELECT id, name, email, subscription_status, access_status, is_admin, oauth_provider, created_at 
        FROM users 
        WHERE access_status = 'pending' 
        ORDER BY created_at DESC`
@@ -787,7 +822,7 @@ app.post('/api/admin/access-requests/:id/approve', loadCurrentUser, requireAdmin
       `UPDATE users 
        SET access_status = 'approved', subscription_status = 'premium' 
        WHERE id = $1 
-       RETURNING id, email, subscription_status, access_status, is_admin`,
+       RETURNING id, name, email, subscription_status, access_status, is_admin`,
       [id]
     );
 
@@ -812,7 +847,7 @@ app.post('/api/admin/access-requests/:id/decline', loadCurrentUser, requireAdmin
       `UPDATE users 
        SET access_status = 'declined' 
        WHERE id = $1 
-       RETURNING id, email, subscription_status, access_status, is_admin`,
+       RETURNING id, name, email, subscription_status, access_status, is_admin`,
       [id]
     );
 
@@ -946,13 +981,14 @@ app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
       });
 
       const username = userResponse.data.login;
+      const ghName = (userResponse.data.name || username || '').slice(0, 100);
       if (!username) {
         return res.redirect(`${frontendOrigin}/?oauth_error=${encodeURIComponent("Failed to retrieve username from GitHub profile.")}`);
       }
 
       await db.query(
-        'UPDATE users SET github_token = $1, github_username = $2 WHERE id = $3',
-        [accessToken, username, linkUserId]
+        'UPDATE users SET github_token = $1, github_username = $2, name = COALESCE(name, $3) WHERE id = $4',
+        [accessToken, username, ghName, linkUserId]
       );
 
       return res.redirect(`${frontendOrigin}/?github_connected=true`);
@@ -964,6 +1000,7 @@ app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
 
   let email = '';
   let oauthId = '';
+  let displayName = '';
 
   try {
     if (provider === 'github') {
@@ -979,6 +1016,7 @@ app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
         headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
       });
       oauthId = String(userResponse.data.id);
+      displayName = userResponse.data.name || userResponse.data.login || '';
 
       const emailsResponse = await axios.get('https://api.github.com/user/emails', {
         headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
@@ -1000,6 +1038,7 @@ app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
       const decoded = jwt.decode(idToken);
       email = decoded.email.toLowerCase();
       oauthId = decoded.sub;
+      displayName = decoded.name || '';
     } else {
       return res.status(400).send("Unsupported OAuth provider callback");
     }
@@ -1023,24 +1062,24 @@ app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
     let userQuery = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     let userId;
 
+    const resolvedName = (displayName || email.split('@')[0] || 'User').slice(0, 100);
+
     if (userQuery.rows.length === 0) {
       userId = crypto.randomUUID();
       const mockPasswordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
       // New users default to access_status = 'pending'
       await db.query(
-        `INSERT INTO users (id, email, hashed_password, subscription_status, access_status, is_admin, is_verified, oauth_provider, oauth_id) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [userId, email, mockPasswordHash, 'free', 'pending', false, true, provider, oauthId]
+        `INSERT INTO users (id, name, email, hashed_password, subscription_status, access_status, is_admin, is_verified, oauth_provider, oauth_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [userId, resolvedName, email, mockPasswordHash, 'free', 'pending', false, true, provider, oauthId]
       );
     } else {
       const user = userQuery.rows[0];
       userId = user.id;
-      if (!user.oauth_provider) {
-        await db.query(
-          'UPDATE users SET oauth_provider = $1, oauth_id = $2, is_verified = TRUE WHERE id = $3',
-          [provider, oauthId, userId]
-        );
-      }
+      await db.query(
+        'UPDATE users SET oauth_provider = COALESCE(oauth_provider, $1), oauth_id = COALESCE(oauth_id, $2), is_verified = TRUE, name = COALESCE(name, $3) WHERE id = $4',
+        [provider, oauthId, resolvedName, userId]
+      );
     }
 
     // Clean up pending registrations
