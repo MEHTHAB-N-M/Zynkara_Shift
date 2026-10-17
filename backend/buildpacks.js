@@ -250,6 +250,8 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/node_modules ./node_modules
+RUN chown -R node:node /app
+USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1
@@ -272,6 +274,8 @@ COPY package*.json ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 COPY . .
+RUN chown -R node:node /app
+USER node
 
 EXPOSE ${port}
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
@@ -290,11 +294,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -s /bin/bash appuser
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN chown -R appuser:appgroup /app
+USER appuser
 
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
@@ -313,11 +320,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=5000
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -s /bin/bash appuser
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN chown -R appuser:appgroup /app
+USER appuser
 
 EXPOSE 5000
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
@@ -337,11 +347,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -s /bin/bash appuser
 
 COPY requirements.txt* ./
 RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
 COPY . .
+RUN chown -R appuser:appgroup /app
+USER appuser
 
 EXPOSE 8000
 CMD ["python", "main.py"]
@@ -360,7 +373,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
 
 FROM alpine:3.19
 WORKDIR /app
+RUN addgroup -S appgroup -g 1001 && adduser -S appuser -u 1001 -G appgroup
 COPY --from=builder /app/server ./server
+RUN chown -R appuser:appgroup /app
+USER appuser
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:8080/ || exit 1
@@ -380,7 +396,10 @@ RUN cargo build --release
 
 FROM alpine:3.19
 WORKDIR /app
+RUN addgroup -S appgroup -g 1001 && adduser -S appuser -u 1001 -G appgroup
 COPY --from=builder /app/target/release/* ./app_binary
+RUN chown -R appuser:appgroup /app
+USER appuser
 EXPOSE 8080
 CMD ["./app_binary"]
 `;

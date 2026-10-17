@@ -216,6 +216,13 @@ class OrchestrationService {
       console.error("Warning: Volume directory could not be created:", e);
     }
 
+    // Ensure per-project isolated network exists
+    try {
+      await this._getOrCreateNetwork(netName);
+    } catch (e) {
+      console.warn(`Could not ensure isolated project network ${netName}:`, e);
+    }
+
     console.log(`Deploying database container: ${dbName} (${imageName})`);
     const container = await this.docker.createContainer({
       Image: imageName,
@@ -227,9 +234,14 @@ class OrchestrationService {
         RestartPolicy: { Name: 'unless-stopped' },
         Binds: [`${hostVolumePath}:${containerDbPath}:rw`],
         Memory: 512 * 1024 * 1024,
+        MemorySwap: 1024 * 1024 * 1024, // Enforce 1GB total limit (512MB RAM + 512MB swap)
         NanoCpus: 500000000, // 0.5 CPU core
+        CpuPeriod: 100000,
+        CpuQuota: 50000,
         SecurityOpt: ['no-new-privileges:true'],
-        PidsLimit: 150
+        PidsLimit: 150,
+        CapDrop: ['ALL'],
+        CapAdd: ['CHOWN', 'SETUID', 'SETGID', 'DAC_OVERRIDE', 'FOWNER']
       }
     });
 
@@ -277,6 +289,13 @@ class OrchestrationService {
       "traefik.docker.network": this.traefikNetwork
     };
 
+    // Ensure per-project isolated network exists
+    try {
+      await this._getOrCreateNetwork(projectNetName);
+    } catch (e) {
+      console.warn(`Could not ensure isolated project network ${projectNetName}:`, e);
+    }
+
     console.log(`Deploying application container: ${appName} (${appImage})`);
     const appContainer = await this.docker.createContainer({
       Image: appImage,
@@ -287,10 +306,14 @@ class OrchestrationService {
         NetworkMode: projectNetName,
         RestartPolicy: { Name: 'unless-stopped' },
         Memory: 512 * 1024 * 1024,
+        MemorySwap: 1024 * 1024 * 1024, // Enforces 1GB total limit (512MB RAM + 512MB swap)
         NanoCpus: 500000000, // 0.5 CPU core
+        CpuPeriod: 100000,
+        CpuQuota: 50000, // Enforces 50% CPU limit
         SecurityOpt: ['no-new-privileges:true'],
         PidsLimit: 100, // Prevents fork bombs
-        CapDrop: ['MKNOD', 'SYS_RAWIO', 'SYS_ADMIN', 'NET_ADMIN']
+        CapDrop: ['ALL'],
+        CapAdd: ['NET_BIND_SERVICE']
       }
     });
 

@@ -231,6 +231,12 @@ export default function App() {
   const [authVerificationRequired, setAuthVerificationRequired] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [verificationEmail, setVerificationEmail] = useState('');
+  const [accessGateStatus, setAccessGateStatus] = useState(null); // 'pending' | 'declined' | null
+
+  // Admin Access Requests States
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminRequests, setAdminRequests] = useState([]);
+  const [isLoadingAdminRequests, setIsLoadingAdminRequests] = useState(false);
 
   // Dashboard & Projects States
   const [projects, setProjects] = useState([]);
@@ -308,12 +314,18 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const oauthToken = params.get('oauth_token');
     const oauthError = params.get('oauth_error');
+    const accessStatusParam = params.get('access_status');
     const upgradeSuccess = params.get('upgrade_success');
 
     if (oauthToken) {
       localStorage.setItem('zynkara_token', oauthToken);
       setToken(oauthToken);
       showToast('Logged in successfully', 'success');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (accessStatusParam) {
+      setAccessGateStatus(accessStatusParam);
+      const err = params.get('error');
+      if (err) setAuthError(decodeURIComponent(err));
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (oauthError) {
       showToast(oauthError, 'error');
@@ -413,10 +425,63 @@ export default function App() {
       setCurrentUser(data);
       fetchProjects(authToken);
       fetchGithubStatus(authToken);
+      if (data.is_admin) {
+        fetchAdminRequests(authToken);
+      }
     } catch (err) {
       localStorage.removeItem('zynkara_token');
       setToken(null);
       setCurrentUser(null);
+    }
+  };
+
+  const fetchAdminRequests = async (authToken = token) => {
+    setIsLoadingAdminRequests(true);
+    try {
+      const res = await fetch('/api/admin/access-requests', {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminRequests(data);
+      }
+    } catch (e) {
+      console.error("Failed to load access requests:", e);
+    } finally {
+      setIsLoadingAdminRequests(false);
+    }
+  };
+
+  const handleApproveRequest = async (userId) => {
+    showToast("Approving access request...", "info");
+    try {
+      const res = await fetch(`/api/admin/access-requests/${userId}/approve`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Approval failed");
+      showToast("Access approved! User upgraded to premium plan.", "success");
+      fetchAdminRequests();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const handleDeclineRequest = async (userId) => {
+    if (!window.confirm("Are you sure you want to decline this access request?")) return;
+    showToast("Declining access request...", "info");
+    try {
+      const res = await fetch(`/api/admin/access-requests/${userId}/decline`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Decline failed");
+      showToast("User access request declined.", "info");
+      fetchAdminRequests();
+    } catch (err) {
+      showToast(err.message, "error");
     }
   };
 
@@ -584,11 +649,18 @@ export default function App() {
       } catch (err) { }
 
       if (!response.ok) {
-        if (authMode === 'login' && response.status === 403 && data.unverified) {
-          setVerificationEmail(authEmail);
-          setAuthVerificationRequired(true);
-          showToast('Please verify your email address.', 'warning');
-          return;
+        if (response.status === 403) {
+          if (data.access_status) {
+            setAccessGateStatus(data.access_status);
+            setAuthError('');
+            return;
+          }
+          if (authMode === 'login' && data.unverified) {
+            setVerificationEmail(authEmail);
+            setAuthVerificationRequired(true);
+            showToast('Please verify your email address.', 'warning');
+            return;
+          }
         }
         throw new Error(data.detail || 'Authentication failed');
       }
@@ -625,6 +697,12 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok) {
+        if (response.status === 403 && data.access_status) {
+          setAccessGateStatus(data.access_status);
+          setAuthVerificationRequired(false);
+          setAuthError('');
+          return;
+        }
         throw new Error(data.detail || 'Verification failed');
       }
 
@@ -1040,14 +1118,118 @@ export default function App() {
               <p>Self-Hosted, Zero-Cost Cloud PaaS</p>
             </div>
 
-            {!authVerificationRequired && (
-              <div className="auth-tabs">
-                <button className={`tab-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => setAuthMode('login')}>Sign In</button>
-                <button className={`tab-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => setAuthMode('register')}>Register</button>
-              </div>
-            )}
+            {accessGateStatus ? (
+              <div style={{ textAlign: 'center', padding: '15px 0' }}>
+                <div style={{
+                  width: '68px',
+                  height: '68px',
+                  margin: '0 auto 18px',
+                  borderRadius: '50%',
+                  background: accessGateStatus === 'pending' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  border: `1px solid ${accessGateStatus === 'pending' ? 'rgba(245, 158, 11, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: `0 0 25px ${accessGateStatus === 'pending' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(239, 68, 68, 0.25)'}`
+                }}>
+                  <i className={`fa-solid ${accessGateStatus === 'pending' ? 'fa-hourglass-half' : 'fa-circle-xmark'}`} style={{
+                    fontSize: '30px',
+                    color: accessGateStatus === 'pending' ? '#f59e0b' : '#ef4444'
+                  }}></i>
+                </div>
 
-            {authVerificationRequired ? (
+                <h3 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', marginBottom: '8px' }}>
+                  {accessGateStatus === 'pending' ? 'Access Request Pending' : 'Access Request Declined'}
+                </h3>
+
+                <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: '1.6', marginBottom: '22px' }}>
+                  {accessGateStatus === 'pending'
+                    ? 'Your access request has been registered and is pending manual administrator approval. Nobody gets in without admin approval.'
+                    : 'Your request for access to ZynkaraShift was reviewed and declined by the system administrator.'
+                  }
+                </p>
+
+                {accessGateStatus === 'pending' && (
+                  <div style={{
+                    background: 'rgba(15, 23, 42, 0.6)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '8px',
+                    padding: '12px 14px',
+                    fontSize: '12px',
+                    color: '#cbd5e1',
+                    marginBottom: '22px',
+                    textAlign: 'left',
+                    lineHeight: '1.5'
+                  }}>
+                    <i className="fa-solid fa-circle-info" style={{ color: '#38bdf8', marginRight: '8px' }}></i>
+                    Once approved by the admin, your account will be unlocked with unlimited deployment capabilities.
+                  </div>
+                )}
+
+                <button
+                  className="btn btn-primary btn-block"
+                  onClick={() => {
+                    setAccessGateStatus(null);
+                    setAuthMode('login');
+                    setAuthError('');
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                >
+                  <i className="fa-solid fa-arrow-left"></i>
+                  <span>Back to Sign In</span>
+                </button>
+              </div>
+            ) : !authVerificationRequired ? (
+              <>
+                <div className="auth-tabs">
+                  <button className={`tab-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => setAuthMode('login')}>Sign In</button>
+                  <button className={`tab-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => setAuthMode('register')}>Register</button>
+                </div>
+
+                <form onSubmit={handleAuthSubmit}>
+                  <div className="input-group">
+                    <label htmlFor="auth-email"><i className="fa-solid fa-envelope"></i> Email Address</label>
+                    <input
+                      type="email"
+                      id="auth-email"
+                      required
+                      placeholder="name@domain.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                    />
+                  </div>
+                  <div className="input-group">
+                    <label htmlFor="auth-password"><i className="fa-solid fa-lock"></i> Password</label>
+                    <input
+                      type="password"
+                      id="auth-password"
+                      required
+                      placeholder="••••••••"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                    />
+                  </div>
+                  <button type="submit" className="btn btn-primary btn-block">
+                    <span>{authMode === 'login' ? 'Sign In' : 'Request Access'}</span> <i className="fa-solid fa-arrow-right"></i>
+                  </button>
+                </form>
+
+                <div style={{ margin: '20px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                  <span style={{ height: '1px', background: 'rgba(255,255,255,0.1)', flex: 1 }}></span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>Or continue with</span>
+                  <span style={{ height: '1px', background: 'rgba(255,255,255,0.1)', flex: 1 }}></span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
+                  <a href={`/api/auth/oauth/github?origin=${encodeURIComponent(window.location.origin)}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px', background: 'rgba(0,0,0,0.15)', borderColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none' }}>
+                    <i className="fa-brands fa-github"></i> GitHub
+                  </a>
+                  <a href={`/api/auth/oauth/google?origin=${encodeURIComponent(window.location.origin)}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px', background: 'rgba(0,0,0,0.15)', borderColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none' }}>
+                    <i className="fa-brands fa-google"></i> Google
+                  </a>
+                </div>
+              </>
+            ) : (
               <form onSubmit={handleVerifySubmit}>
                 <div style={{ marginBottom: '20px', textAlign: 'center' }}>
                   <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
@@ -1081,51 +1263,6 @@ export default function App() {
                   Back to {authMode === 'login' ? 'Sign In' : 'Register'}
                 </button>
               </form>
-            ) : (
-              <>
-                <form onSubmit={handleAuthSubmit}>
-                  <div className="input-group">
-                    <label htmlFor="auth-email"><i className="fa-solid fa-envelope"></i> Email Address</label>
-                    <input
-                      type="email"
-                      id="auth-email"
-                      required
-                      placeholder="name@domain.com"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                    />
-                  </div>
-                  <div className="input-group">
-                    <label htmlFor="auth-password"><i className="fa-solid fa-lock"></i> Password</label>
-                    <input
-                      type="password"
-                      id="auth-password"
-                      required
-                      placeholder="••••••••"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                    />
-                  </div>
-                  <button type="submit" className="btn btn-primary btn-block">
-                    <span>{authMode === 'login' ? 'Sign In' : 'Register Account'}</span> <i className="fa-solid fa-arrow-right"></i>
-                  </button>
-                </form>
-
-                <div style={{ margin: '20px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
-                  <span style={{ height: '1px', background: 'rgba(255,255,255,0.1)', flex: 1 }}></span>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>Or continue with</span>
-                  <span style={{ height: '1px', background: 'rgba(255,255,255,0.1)', flex: 1 }}></span>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
-                  <a href={`/api/auth/oauth/github?origin=${encodeURIComponent(window.location.origin)}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px', background: 'rgba(0,0,0,0.15)', borderColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none' }}>
-                    <i className="fa-brands fa-github"></i> GitHub
-                  </a>
-                  <a href={`/api/auth/oauth/google?origin=${encodeURIComponent(window.location.origin)}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px', background: 'rgba(0,0,0,0.15)', borderColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none' }}>
-                    <i className="fa-brands fa-google"></i> Google
-                  </a>
-                </div>
-              </>
             )}
             {authError && <p className="error-text">{authError}</p>}
           </div>
@@ -1150,6 +1287,28 @@ export default function App() {
                   </span>
                 </div>
               </div>
+              {currentUser.is_admin && (
+                <button
+                  className="btn btn-secondary btn-xs"
+                  onClick={() => { setShowAdminModal(true); fetchAdminRequests(); }}
+                  style={{ borderColor: '#818cf8', color: '#818cf8', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <i className="fa-solid fa-user-shield"></i>
+                  <span>Access Requests</span>
+                  {adminRequests.length > 0 && (
+                    <span style={{
+                      background: '#ef4444',
+                      color: '#fff',
+                      borderRadius: '99px',
+                      padding: '1px 6px',
+                      fontSize: '11px',
+                      fontWeight: 700
+                    }}>
+                      {adminRequests.length}
+                    </span>
+                  )}
+                </button>
+              )}
               {currentUser.subscription_status !== 'premium' && (
                 <button className="btn btn-secondary btn-xs" onClick={() => setShowUpgradeModal(true)} style={{ borderColor: '#fbbf24', color: '#fbbf24' }}>
                   <i className="fa-solid fa-crown"></i> Upgrade
@@ -1904,6 +2063,89 @@ export default function App() {
             <pre className="logs-content" id="logs-display" ref={logsDisplayRef}>
               {activeLogsTab === 'build' ? buildLogs : runtimeLogs}
             </pre>
+          </div>
+        </div>
+      )}
+      {/* Admin Access Requests Modal */}
+      {showAdminModal && (
+        <div className="overlay active" style={{ zIndex: 350 }}>
+          <div className="payment-card glass" style={{ maxWidth: '650px', width: '95%', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <button className="close-overlay-btn" onClick={() => setShowAdminModal(false)} title="Close" aria-label="Close">
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+            <div className="payment-header" style={{ marginBottom: '16px' }}>
+              <i className="fa-solid fa-user-shield" style={{ fontSize: '32px', color: '#818cf8', marginBottom: '8px' }}></i>
+              <h2>Access Gate Management</h2>
+              <p>Manual administrator review for registered user accounts</p>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', marginBottom: '15px' }}>
+              {isLoadingAdminRequests ? (
+                <div style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>
+                  <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '24px', marginBottom: '10px' }}></i>
+                  <p>Loading pending access requests...</p>
+                </div>
+              ) : adminRequests.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#94a3b8', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
+                  <i className="fa-solid fa-check-double" style={{ fontSize: '32px', color: '#10b981', marginBottom: '12px' }}></i>
+                  <h4 style={{ color: '#f8fafc', marginBottom: '6px' }}>Queue is Clear</h4>
+                  <p style={{ fontSize: '13px' }}>No pending access requests awaiting review.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {adminRequests.map(req => (
+                    <div key={req.id} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: 'rgba(15, 23, 42, 0.7)',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      borderRadius: '8px',
+                      padding: '12px 16px',
+                      gap: '12px'
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontWeight: 600, color: '#f8fafc', fontSize: '14px', wordBreak: 'break-all' }}>
+                            {req.email}
+                          </span>
+                          {req.oauth_provider && (
+                            <span className="badge badge-beta" style={{ fontSize: '10px' }}>
+                              {req.oauth_provider}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                          Registered: {new Date(req.created_at).toLocaleString()}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                        <button
+                          className="btn btn-primary btn-xs"
+                          onClick={() => handleApproveRequest(req.id)}
+                          style={{ background: '#10b981', borderColor: '#10b981', color: '#fff' }}
+                        >
+                          <i className="fa-solid fa-check"></i> Approve
+                        </button>
+                        <button
+                          className="btn btn-danger btn-xs"
+                          onClick={() => handleDeclineRequest(req.id)}
+                        >
+                          <i className="fa-solid fa-xmark"></i> Decline
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => fetchAdminRequests()}>
+                <i className="fa-solid fa-arrows-rotate"></i> Refresh
+              </button>
+            </div>
           </div>
         </div>
       )}

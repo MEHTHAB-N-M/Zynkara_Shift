@@ -122,7 +122,11 @@ Key values to set:
 JWT_SECRET=<run: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))">
 POSTGRES_PASSWORD=<same-as-root-.env>
 DATABASE_URL=postgresql://postgres:<same-password>@postgres-control:5432/VaporupDeploy
-SEED_ADMIN_PASSWORD=<your-admin-password>
+```
+
+To create your initial approved administrator account (`mehthab077@gmail.com`), run:
+```bash
+node backend/create_admin.js
 ```
 
 **Important:** The `DATABASE_URL` in `backend/.env` must use `postgres-control` as the host (not `localhost`), because inside Docker Compose the containers communicate via service names.

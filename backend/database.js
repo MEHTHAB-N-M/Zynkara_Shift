@@ -42,6 +42,8 @@ async function initializeDatabase() {
         email VARCHAR(255) UNIQUE NOT NULL,
         hashed_password VARCHAR(255) NOT NULL,
         subscription_status VARCHAR(50) DEFAULT 'free' NOT NULL,
+        access_status VARCHAR(20) DEFAULT 'pending' NOT NULL,
+        is_admin BOOLEAN DEFAULT FALSE NOT NULL,
         github_token VARCHAR(255),
         github_username VARCHAR(255),
         is_verified BOOLEAN DEFAULT FALSE NOT NULL,
@@ -51,7 +53,9 @@ async function initializeDatabase() {
       );
     `);
 
-    // Ensure github connection and verification columns exist on users table (for existing installations)
+    // Ensure github connection, verification, access_status, and is_admin columns exist on users table
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS access_status VARCHAR(20) DEFAULT 'pending' NOT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE NOT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token VARCHAR(255);`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_username VARCHAR(255);`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE NOT NULL;`);

@@ -13,7 +13,6 @@ const AdmZip = require('adm-zip');
 const tar = require('tar-fs');
 
 const db = require('./database');
-const { seedDatabase } = require('./seed');
 const OrchestrationService = require('./orchestration');
 const { parseChatbotIntent } = require('./chat');
 const { detectFramework, synthesizeDockerfile } = require('./buildpacks');
@@ -25,6 +24,7 @@ const stripe = stripeSecret ? require('stripe')(stripeSecret) : null;
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -66,7 +66,7 @@ const generalLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // Strict limit: max 20 login/register attempts per 15 mins to prevent brute-forcing
+  max: 10, // Strict limit: max 10 authentication requests per 15 mins per IP
   standardHeaders: true,
   legacyHeaders: false,
   message: { detail: "Too many authentication attempts. Please try again after 15 minutes." }
@@ -83,8 +83,25 @@ const deployLimiter = rateLimit({
 // Apply general rate limiter across all API routes
 app.use('/api/', generalLimiter);
 
-// Middleware
-app.use(cors());
+// Strict CORS Policy - Locked to actual domain & local dev origins (No Wildcard)
+const allowedOrigins = [
+  `https://${PLATFORM_DOMAIN}`,
+  `http://${PLATFORM_DOMAIN}`,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:8000',
+  'http://127.0.0.1:8000'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS policy blocked access from origin: ${origin}`));
+  },
+  credentials: true
+}));
 
 // Stripe Webhook needs the raw body, so define this BEFORE express.json()
 app.post('/api/subscription/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -127,11 +144,35 @@ app.post('/api/subscription/webhook', express.raw({ type: 'application/json' }),
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(cookieParser());
 
-// Load current user from JWT token
+// Cookie security helper
+function setAuthCookie(res, token) {
+  const isProd = process.env.NODE_ENV === 'production';
+  res.cookie('zynkara_token', token, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'strict' : 'lax', // 'strict' in production, 'lax' for local dev compatibility
+    maxAge: 2 * 60 * 60 * 1000 // 2 hours
+  });
+}
+
+function clearAuthCookie(res) {
+  const isProd = process.env.NODE_ENV === 'production';
+  res.clearCookie('zynkara_token', {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'strict' : 'lax'
+  });
+}
+
+// Load current user from JWT token (Header or httpOnly Cookie)
 async function loadCurrentUser(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+  let token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+  if (!token && req.cookies && req.cookies.zynkara_token) {
+    token = req.cookies.zynkara_token;
+  }
 
   if (!token) {
     return res.status(401).json({ detail: "Authentication credentials not provided or invalid" });
@@ -143,17 +184,108 @@ async function loadCurrentUser(req, res, next) {
     if (userQuery.rows.length === 0) {
       return res.status(401).json({ detail: "Could not validate credentials" });
     }
-    req.currentUser = userQuery.rows[0];
+    const user = userQuery.rows[0];
+
+    // Gate access: Reject non-approved accounts
+    if (user.access_status === 'pending') {
+      return res.status(403).json({
+        detail: "Your access request is pending approval.",
+        access_status: "pending"
+      });
+    }
+    if (user.access_status === 'declined') {
+      return res.status(403).json({
+        detail: "Access request was declined.",
+        access_status: "declined"
+      });
+    }
+
+    req.currentUser = user;
     next();
   } catch (err) {
     return res.status(401).json({ detail: "Could not validate credentials" });
   }
 }
 
+// Require Admin Middleware
+function requireAdmin(req, res, next) {
+  if (!req.currentUser || req.currentUser.is_admin !== true) {
+    return res.status(403).json({ detail: "Administrator privileges required." });
+  }
+  next();
+}
+
 // Helper to sanitize project names (Security Check)
 function validateProjectName(name) {
-  if (!name || name.length > 100) return false;
-  return /^[a-z0-9\-]+$/.test(name);
+  if (!name || typeof name !== 'string' || name.length > 63) return false;
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name);
+}
+
+// Helper to sanitize subdomain (Security Check)
+function validateSubdomain(subdomain) {
+  if (!subdomain || typeof subdomain !== 'string' || subdomain.length > 63) return false;
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(subdomain);
+}
+
+// Helper to validate Docker images (Prohibits shell metacharacters and command injection)
+function validateDockerImage(image) {
+  if (!image || typeof image !== 'string' || image.length > 255) return false;
+  if (/[\s;$`&|><(){}[\]\\!^~*?'"]/.test(image)) return false;
+  return /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[a-zA-Z0-9_.-]+)?(?:@sha256:[a-f0-9]{64})?$/i.test(image);
+}
+
+// Helper to validate GitHub repositories (owner/repo)
+function validateGitHubRepo(repo) {
+  if (!repo || typeof repo !== 'string' || repo.length > 200) return false;
+  let clean = repo.trim();
+  if (clean.startsWith('https://github.com/')) clean = clean.replace('https://github.com/', '');
+  if (clean.endsWith('.git')) clean = clean.substring(0, clean.length - 4);
+  if (/[\s;$`&|><(){}[\]\\!^~*?'"]/.test(clean)) return false;
+  if (clean.includes('..') || clean.startsWith('/') || clean.endsWith('/')) return false;
+  const parts = clean.split('/');
+  if (parts.length !== 2) return false;
+  return /^[a-zA-Z0-9_.-]+$/.test(parts[0]) && /^[a-zA-Z0-9_.-]+$/.test(parts[1]);
+}
+
+// Helper to validate Git branch names
+function validateGitHubBranch(branch) {
+  if (!branch || typeof branch !== 'string' || branch.length > 100) return false;
+  if (/[\s;$`&|><(){}[\]\\!^~*?':"]/.test(branch)) return false;
+  if (branch.includes('..') || branch.includes('//') || branch.includes('@{')) return false;
+  if (branch.startsWith('/') || branch.endsWith('/') || branch.endsWith('.lock') || branch.startsWith('.')) return false;
+  return /^[a-zA-Z0-9_./-]+$/.test(branch);
+}
+
+// Helper to validate environment variables
+function validateEnvVars(envVars) {
+  if (envVars === null || envVars === undefined) return { valid: true, sanitized: {} };
+  if (typeof envVars !== 'object' || Array.isArray(envVars)) {
+    return { valid: false, detail: "Environment variables must be a JSON object mapping keys to values." };
+  }
+  const entries = Object.entries(envVars);
+  if (entries.length > 200) return { valid: false, detail: "Too many environment variables (maximum 200 allowed)." };
+
+  const sanitized = {};
+  for (const [key, value] of entries) {
+    if (!key || typeof key !== 'string' || key.length > 128) {
+      return { valid: false, detail: `Invalid environment variable key '${key}'. Keys must be strings up to 128 characters.` };
+    }
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
+      return { valid: false, detail: `Environment variable key '${key}' contains invalid characters. Only alphanumeric characters and underscores are allowed.` };
+    }
+    if (['LD_PRELOAD', 'LD_LIBRARY_PATH', 'BASH_ENV', 'SHELLOPTS'].includes(key.toUpperCase())) {
+      return { valid: false, detail: `Environment variable key '${key}' is restricted for security.` };
+    }
+    const strVal = String(value);
+    if (strVal.length > 8192) {
+      return { valid: false, detail: `Environment variable value for '${key}' exceeds maximum permitted size (8KB).` };
+    }
+    if (strVal.includes('\0')) {
+      return { valid: false, detail: `Environment variable value for '${key}' contains forbidden null bytes.` };
+    }
+    sanitized[key] = strVal;
+  }
+  return { valid: true, sanitized };
 }
 
 // Helper to validate email domains & resolve MX records
@@ -256,18 +388,29 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
       await appendLogs('Repository downloaded. Extracting zipball...');
 
       const buildDir = path.join(__dirname, 'build-temp', crypto.randomUUID());
-      fs.mkdirSync(buildDir, { recursive: true });
+      const resolvedBuildDir = path.resolve(buildDir);
+      fs.mkdirSync(resolvedBuildDir, { recursive: true });
 
       try {
         const zip = new AdmZip(Buffer.from(response.data));
-        zip.extractAllTo(buildDir, true);
+        const entries = zip.getEntries();
+
+        // Security check: Zip-slip prevention
+        for (const entry of entries) {
+          const entryPath = path.resolve(resolvedBuildDir, entry.entryName);
+          if (!entryPath.startsWith(resolvedBuildDir + path.sep) && entryPath !== resolvedBuildDir) {
+            throw new Error(`Security violation: Malicious zip entry detected (path traversal attempt): ${entry.entryName}`);
+          }
+        }
+
+        zip.extractAllTo(resolvedBuildDir, true);
 
         // Find root folder in extraction directory
-        const dirs = fs.readdirSync(buildDir).filter(f => fs.statSync(path.join(buildDir, f)).isDirectory());
+        const dirs = fs.readdirSync(resolvedBuildDir).filter(f => fs.statSync(path.join(resolvedBuildDir, f)).isDirectory());
         if (dirs.length === 0) {
           throw new Error('Extracted zipball is empty');
         }
-        const repoRoot = path.join(buildDir, dirs[0]);
+        const repoRoot = path.join(resolvedBuildDir, dirs[0]);
 
         // Validate or synthesize Dockerfile via Zero-Config Buildpack Engine
         const dockerfilePath = path.join(repoRoot, 'Dockerfile');
@@ -300,20 +443,38 @@ async function executeDeploymentPipeline(project, appImage, appPort, envVars) {
         // Pack into tar stream for Docker daemon
         const pack = tar.pack(repoRoot);
 
-        await appendLogs(`Building Docker image with tag '${imageTag}'...`);
+        await appendLogs(`Building Docker image with tag '${imageTag}' (Timeout: 10 minutes)...`);
 
         await new Promise((resolve, reject) => {
+          let isComplete = false;
+          // Build timeout: 10 minutes max to prevent runaway builds
+          const buildTimeout = setTimeout(() => {
+            if (!isComplete) {
+              isComplete = true;
+              try { pack.destroy(); } catch (e) {}
+              reject(new Error("Build timed out after 10 minutes. Execution aborted for security."));
+            }
+          }, 10 * 60 * 1000);
+
           orchestration.docker.buildImage(pack, { t: imageTag, rm: true }, (err, stream) => {
-            if (err) return reject(err);
+            if (err) {
+              clearTimeout(buildTimeout);
+              isComplete = true;
+              return reject(err);
+            }
 
             orchestration.docker.modem.followProgress(stream, onFinished, onProgress);
 
             function onFinished(err, output) {
+              clearTimeout(buildTimeout);
+              if (isComplete) return;
+              isComplete = true;
               if (err) return reject(err);
               resolve(output);
             }
 
             async function onProgress(event) {
+              if (isComplete) return;
               if (event.stream) {
                 appendLogs(event.stream.trim());
               } else if (event.status) {
@@ -472,26 +633,25 @@ app.post('/api/auth/verify', authLimiter, async (req, res) => {
       return res.status(400).json({ detail: "Verification code has expired. Please request a new code." });
     }
 
-    // 3. Move user to active users table
+    // 3. Move user to active users table with pending access status
     const userId = crypto.randomUUID();
     await db.query(
-      `INSERT INTO users (id, email, hashed_password, subscription_status, is_verified) 
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, cleanEmail, record.hashed_password, 'free', true]
+      `INSERT INTO users (id, email, hashed_password, subscription_status, access_status, is_admin, is_verified) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [userId, cleanEmail, record.hashed_password, 'free', 'pending', false, true]
     );
 
     // 4. Delete from pending registrations
     await db.query('DELETE FROM pending_registrations WHERE email = $1', [cleanEmail]);
 
-    // 5. Generate JWT token
-    const token = jwt.sign({ sub: cleanEmail }, SECRET_KEY);
-    res.json({
-      access_token: token,
-      token_type: "bearer",
+    // 5. Block token issuance for pending users
+    return res.status(403).json({
+      detail: "Your access request is pending approval.",
+      access_status: "pending",
       user: {
         id: userId,
         email: cleanEmail,
-        subscription_status: 'free'
+        access_status: "pending"
       }
     });
   } catch (err) {
@@ -535,8 +695,34 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ sub: user.email }, SECRET_KEY);
-    res.json({ access_token: token, token_type: "bearer" });
+    // Gate access: check access_status
+    if (user.access_status === 'pending') {
+      return res.status(403).json({
+        detail: "Your access request is pending approval.",
+        access_status: "pending"
+      });
+    }
+
+    if (user.access_status === 'declined') {
+      return res.status(403).json({
+        detail: "Access request was declined.",
+        access_status: "declined"
+      });
+    }
+
+    const token = jwt.sign({ sub: user.email }, SECRET_KEY, { expiresIn: '2h' });
+    setAuthCookie(res, token);
+    res.json({
+      access_token: token,
+      token_type: "bearer",
+      user: {
+        id: user.id,
+        email: user.email,
+        subscription_status: user.subscription_status,
+        access_status: user.access_status,
+        is_admin: user.is_admin
+      }
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ detail: "Internal server error" });
@@ -548,8 +734,98 @@ app.get('/api/auth/me', loadCurrentUser, (req, res) => {
     id: req.currentUser.id,
     email: req.currentUser.email,
     subscription_status: req.currentUser.subscription_status,
+    access_status: req.currentUser.access_status,
+    is_admin: req.currentUser.is_admin,
     created_at: req.currentUser.created_at
   });
+});
+
+app.post('/api/auth/refresh', loadCurrentUser, (req, res) => {
+  const token = jwt.sign({ sub: req.currentUser.email }, SECRET_KEY, { expiresIn: '2h' });
+  setAuthCookie(res, token);
+  res.json({
+    access_token: token,
+    token_type: "bearer",
+    user: {
+      id: req.currentUser.id,
+      email: req.currentUser.email,
+      subscription_status: req.currentUser.subscription_status,
+      access_status: req.currentUser.access_status,
+      is_admin: req.currentUser.is_admin
+    }
+  });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.json({ detail: "Logged out successfully" });
+});
+
+// --- ADMIN ACCESS GATE ENDPOINTS ---
+
+app.get('/api/admin/access-requests', loadCurrentUser, requireAdmin, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT id, email, subscription_status, access_status, is_admin, oauth_provider, created_at 
+       FROM users 
+       WHERE access_status = 'pending' 
+       ORDER BY created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching access requests:", err);
+    res.status(500).json({ detail: "Database error fetching access requests." });
+  }
+});
+
+app.post('/api/admin/access-requests/:id/approve', loadCurrentUser, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await db.query(
+      `UPDATE users 
+       SET access_status = 'approved', subscription_status = 'premium' 
+       WHERE id = $1 
+       RETURNING id, email, subscription_status, access_status, is_admin`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ detail: "User not found." });
+    }
+
+    res.json({
+      message: "Access request approved. User upgraded to premium.",
+      user: result.rows[0]
+    });
+  } catch (err) {
+    console.error("Error approving access request:", err);
+    res.status(500).json({ detail: "Database error approving access request." });
+  }
+});
+
+app.post('/api/admin/access-requests/:id/decline', loadCurrentUser, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await db.query(
+      `UPDATE users 
+       SET access_status = 'declined' 
+       WHERE id = $1 
+       RETURNING id, email, subscription_status, access_status, is_admin`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ detail: "User not found." });
+    }
+
+    res.json({
+      message: "Access request declined.",
+      user: result.rows[0]
+    });
+  } catch (err) {
+    console.error("Error declining access request:", err);
+    res.status(500).json({ detail: "Database error declining access request." });
+  }
 });
 
 // --- UNIFIED OAUTH ENDPOINTS ---
@@ -568,161 +844,6 @@ function getOAuthRedirectUri(provider, req) {
 
   return `${protocol}://${host}/api/auth/oauth/${provider}/callback`;
 }
-
-// Mock Simulator Router View
-app.get('/api/auth/oauth/mock', (req, res) => {
-  const { provider, redirect_uri, state, error } = req.query;
-  if (!provider || !redirect_uri) {
-    return res.status(400).send("Missing query parameters: provider and redirect_uri");
-  }
-
-  const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-  const providerDisplay = provider === 'github' ? 'GitHub' : capitalize(provider);
-
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>${providerDisplay} Login Simulator - ZynkaraShift</title>
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Outfit:wght@600;800&display=swap" rel="stylesheet">
-        <style>
-          body {
-            margin: 0;
-            font-family: 'Inter', sans-serif;
-            background: radial-gradient(circle at top right, #1e1b4b, #0f172a);
-            color: #f8fafc;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-          }
-          .card {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 40px;
-            max-width: 450px;
-            width: 100%;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
-            text-align: center;
-          }
-          h1 {
-            font-family: 'Outfit', sans-serif;
-            font-size: 26px;
-            margin: 0 0 10px 0;
-            background: linear-gradient(135deg, #818cf8, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-          }
-          p {
-            color: #94a3b8;
-            font-size: 14px;
-            line-height: 1.5;
-            margin-bottom: 25px;
-          }
-          .notice-box {
-            background: rgba(245, 158, 11, 0.15);
-            border: 1px solid rgba(245, 158, 11, 0.35);
-            border-radius: 8px;
-            padding: 10px 14px;
-            color: #fcd34d;
-            font-size: 12px;
-            text-align: left;
-            margin-bottom: 20px;
-            line-height: 1.4;
-          }
-          .form-group {
-            margin-bottom: 20px;
-            text-align: left;
-          }
-          label {
-            display: block;
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 6px;
-            color: #cbd5e1;
-          }
-          input, select {
-            width: 100%;
-            padding: 12px;
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 8px;
-            color: #f8fafc;
-            font-size: 14px;
-            box-sizing: border-box;
-            outline: none;
-            transition: border-color 0.2s;
-          }
-          input:focus, select:focus {
-            border-color: #818cf8;
-          }
-          button {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #6366f1, #a855f7);
-            border: none;
-            border-radius: 8px;
-            color: #ffffff;
-            font-weight: 600;
-            font-size: 15px;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-            transition: transform 0.1s, opacity 0.2s;
-            margin-top: 10px;
-          }
-          button:hover {
-            opacity: 0.95;
-          }
-          button:active {
-            transform: scale(0.98);
-          }
-          .provider-badge {
-            display: inline-block;
-            padding: 4px 10px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 99px;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: #818cf8;
-            margin-bottom: 12px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <div class="provider-badge">${providerDisplay}</div>
-          <h1>Developer OAuth Simulator</h1>
-          <p>
-            Authenticate with <strong>${providerDisplay}</strong> instantly in your local development environment.
-          </p>
-          ${error === 'google_secret_invalid' ? `
-            <div class="notice-box">
-              ⚠️ <strong>Notice:</strong> The configured Google Client Secret in <code>backend/.env</code> is invalid or expired. You can sign in below with any test email.
-            </div>
-          ` : ''}
-          <form action="${redirect_uri}" method="GET">
-            <input type="hidden" name="code" value="mock_auth_code_12345" />
-            <input type="hidden" name="state" value="${state || 'mock_state'}" />
-            
-            <div class="form-group">
-              <label for="email">Enter Email Address</label>
-              <input type="email" id="email" name="mock_email" required value="developer@${provider === 'github' ? 'github.com' : 'gmail.com'}" placeholder="e.g. developer@${provider === 'github' ? 'github.com' : 'gmail.com'}" />
-            </div>
-            
-            <button type="submit">Sign In & Continue</button>
-          </form>
-        </div>
-      </body>
-    </html>
-  `);
-});
 
 // Redirect to provider Authorize URL
 app.get('/api/auth/oauth/:provider', (req, res) => {
@@ -755,9 +876,9 @@ app.get('/api/auth/oauth/:provider', (req, res) => {
 });
 
 // OAuth Callback Receiver
-app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
+app.get('/api/auth/oauth/:provider/callback', authLimiter, async (req, res) => {
   const provider = req.params.provider.toLowerCase();
-  const { code, mock_email, state } = req.query;
+  const { code, state } = req.query;
 
   let frontendOrigin = 'http://localhost:5173';
   let isAccountLink = false;
@@ -792,7 +913,7 @@ app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
   }
 
   // Handle GitHub Account connection flow if state (JWT token) was verified
-  if (provider === 'github' && isAccountLink && !mock_email) {
+  if (provider === 'github' && isAccountLink) {
     try {
       const tokenResponse = await axios.post(
         'https://github.com/login/oauth/access_token',
@@ -842,54 +963,48 @@ app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
   let email = '';
   let oauthId = '';
 
-  // Mock Simulator or Real OAuth
-  if (mock_email) {
-    email = mock_email.trim().toLowerCase();
-    oauthId = `mock-${provider}-${crypto.createHash('md5').update(email).digest('hex').substring(0, 10)}`;
-  } else {
-    try {
-      if (provider === 'github') {
-        const tokenResponse = await axios.post(
-          'https://github.com/login/oauth/access_token',
-          { client_id: GITHUB_CLIENT_ID, client_secret: GITHUB_CLIENT_SECRET, code: code },
-          { headers: { 'Accept': 'application/json', 'User-Agent': 'ZynkaraShift-PaaS' } }
-        );
-        const accessToken = tokenResponse.data.access_token;
-        if (!accessToken) throw new Error(tokenResponse.data.error_description || "Failed to exchange GitHub access token");
+  try {
+    if (provider === 'github') {
+      const tokenResponse = await axios.post(
+        'https://github.com/login/oauth/access_token',
+        { client_id: GITHUB_CLIENT_ID, client_secret: GITHUB_CLIENT_SECRET, code: code },
+        { headers: { 'Accept': 'application/json', 'User-Agent': 'ZynkaraShift-PaaS' } }
+      );
+      const accessToken = tokenResponse.data.access_token;
+      if (!accessToken) throw new Error(tokenResponse.data.error_description || "Failed to exchange GitHub access token");
 
-        const userResponse = await axios.get('https://api.github.com/user', {
-          headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
-        });
-        oauthId = String(userResponse.data.id);
+      const userResponse = await axios.get('https://api.github.com/user', {
+        headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
+      });
+      oauthId = String(userResponse.data.id);
 
-        const emailsResponse = await axios.get('https://api.github.com/user/emails', {
-          headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
-        });
-        const primaryEmailObj = emailsResponse.data.find(e => e.primary && e.verified) || emailsResponse.data[0];
-        email = primaryEmailObj ? primaryEmailObj.email.toLowerCase() : userResponse.data.email?.toLowerCase();
-        if (!email) email = `${userResponse.data.login}@users.noreply.github.com`.toLowerCase();
-      } else if (provider === 'google') {
-        const redirectUri = getOAuthRedirectUri('google', req);
-        const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
-          client_id: process.env.GOOGLE_CLIENT_ID,
-          client_secret: process.env.GOOGLE_CLIENT_SECRET,
-          code: code,
-          grant_type: 'authorization_code',
-          redirect_uri: redirectUri
-        });
-        const idToken = tokenResponse.data.id_token;
-        if (!idToken) throw new Error("ID Token missing from Google response");
-        const decoded = jwt.decode(idToken);
-        email = decoded.email.toLowerCase();
-        oauthId = decoded.sub;
-      } else {
-        return res.status(400).send("Unsupported OAuth provider callback");
-      }
-    } catch (err) {
-      console.error(`OAuth callback error for provider ${provider}:`, err.response?.data || err.message);
-      const desc = err.response?.data?.error_description || err.response?.data?.error || err.message;
-      return res.redirect(`${frontendOrigin}/?oauth_error=${encodeURIComponent(`Authentication failed with ${provider}: ${desc}`)}`);
+      const emailsResponse = await axios.get('https://api.github.com/user/emails', {
+        headers: { 'Authorization': `token ${accessToken}`, 'User-Agent': 'ZynkaraShift-PaaS' }
+      });
+      const primaryEmailObj = emailsResponse.data.find(e => e.primary && e.verified) || emailsResponse.data[0];
+      email = primaryEmailObj ? primaryEmailObj.email.toLowerCase() : userResponse.data.email?.toLowerCase();
+      if (!email) email = `${userResponse.data.login}@users.noreply.github.com`.toLowerCase();
+    } else if (provider === 'google') {
+      const redirectUri = getOAuthRedirectUri('google', req);
+      const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri
+      });
+      const idToken = tokenResponse.data.id_token;
+      if (!idToken) throw new Error("ID Token missing from Google response");
+      const decoded = jwt.decode(idToken);
+      email = decoded.email.toLowerCase();
+      oauthId = decoded.sub;
+    } else {
+      return res.status(400).send("Unsupported OAuth provider callback");
     }
+  } catch (err) {
+    console.error(`OAuth callback error for provider ${provider}:`, err.response?.data || err.message);
+    const desc = err.response?.data?.error_description || err.response?.data?.error || err.message;
+    return res.redirect(`${frontendOrigin}/?oauth_error=${encodeURIComponent(`Authentication failed with ${provider}: ${desc}`)}`);
   }
 
   if (!email) {
@@ -909,10 +1024,11 @@ app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
     if (userQuery.rows.length === 0) {
       userId = crypto.randomUUID();
       const mockPasswordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+      // New users default to access_status = 'pending'
       await db.query(
-        `INSERT INTO users (id, email, hashed_password, subscription_status, is_verified, oauth_provider, oauth_id) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [userId, email, mockPasswordHash, 'free', true, provider, oauthId]
+        `INSERT INTO users (id, email, hashed_password, subscription_status, access_status, is_admin, is_verified, oauth_provider, oauth_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [userId, email, mockPasswordHash, 'free', 'pending', false, true, provider, oauthId]
       );
     } else {
       const user = userQuery.rows[0];
@@ -928,10 +1044,22 @@ app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
     // Clean up pending registrations
     await db.query('DELETE FROM pending_registrations WHERE email = $1', [email]);
 
-    // Generate JWT token
-    const token = jwt.sign({ sub: email }, SECRET_KEY);
+    // Check user's access status
+    const verifiedUser = (await db.query('SELECT * FROM users WHERE email = $1', [email])).rows[0];
 
-    // Redirect back to frontend dashboard with token on the correct frontend origin
+    if (verifiedUser.access_status === 'pending') {
+      return res.redirect(`${frontendOrigin}/?access_status=pending&error=${encodeURIComponent("Your access request is pending approval.")}`);
+    }
+
+    if (verifiedUser.access_status === 'declined') {
+      return res.redirect(`${frontendOrigin}/?access_status=declined&error=${encodeURIComponent("Access request was declined.")}`);
+    }
+
+    // Only issue token if approved
+    const token = jwt.sign({ sub: email }, SECRET_KEY, { expiresIn: '2h' });
+    setAuthCookie(res, token);
+
+    // Redirect back to frontend dashboard with token
     res.redirect(`${frontendOrigin}/?oauth_token=${token}`);
   } catch (err) {
     console.error("OAuth database resolution error:", err);
@@ -989,7 +1117,7 @@ app.post('/api/projects', deployLimiter, loadCurrentUser, async (req, res) => {
 
   // Security checks on input parameters
   if (!validateProjectName(name)) {
-    return res.status(400).json({ detail: "Invalid project name. Only lowercase alphanumeric and hyphens allowed (max 100 chars)." });
+    return res.status(400).json({ detail: "Invalid project name. Only lowercase alphanumeric and hyphens allowed (max 63 chars)." });
   }
 
   if (db_type && !['postgres', 'mysql', 'mongodb', 'redis'].includes(db_type)) {
@@ -999,6 +1127,28 @@ app.post('/api/projects', deployLimiter, loadCurrentUser, async (req, res) => {
   if (!app_image && !github_repo) {
     return res.status(400).json({ detail: "Either app_image or github_repo must be provided." });
   }
+
+  if (app_image && !validateDockerImage(app_image)) {
+    return res.status(400).json({ detail: "Invalid Docker image name format or prohibited characters detected." });
+  }
+
+  if (github_repo && !validateGitHubRepo(github_repo)) {
+    return res.status(400).json({ detail: "Invalid GitHub repository identifier format. Expected 'owner/repo'." });
+  }
+
+  if (github_branch && !validateGitHubBranch(github_branch)) {
+    return res.status(400).json({ detail: "Invalid Git branch format or prohibited characters detected." });
+  }
+
+  if (github_token && (!/^[a-zA-Z0-9_.-]+$/.test(github_token) || github_token.length > 255)) {
+    return res.status(400).json({ detail: "Invalid GitHub token format." });
+  }
+
+  const envValidation = validateEnvVars(env_vars);
+  if (!envValidation.valid) {
+    return res.status(400).json({ detail: envValidation.detail });
+  }
+  const sanitizedEnvVars = envValidation.sanitized;
 
   const port = parseInt(app_port || 80, 10);
   if (isNaN(port) || port <= 0 || port > 65535) {
@@ -1063,7 +1213,7 @@ app.post('/api/projects', deployLimiter, loadCurrentUser, async (req, res) => {
     // 4. Asynchronously launch deployment pipeline background task (FastAPI equivalent)
     const targetImage = app_image || `github/${github_repo.toLowerCase()}`;
     setImmediate(() => {
-      executeDeploymentPipeline(newProject, targetImage, port, env_vars || {});
+      executeDeploymentPipeline(newProject, targetImage, port, sanitizedEnvVars);
     });
 
     const { github_token, ...returnedProject } = newProject;
@@ -1514,11 +1664,30 @@ app.get('/api/projects/:project_id/telemetry', loadCurrentUser, async (req, res)
 // --- NATURAL LANGUAGE SECRET & ENV INJECTION ROUTE ---
 
 app.post('/api/projects/:project_id/env', loadCurrentUser, async (req, res) => {
+  const { project_id } = req.params;
+  if (!project_id || !/^[0-9a-f-]{36}$/i.test(project_id)) {
+    return res.status(400).json({ detail: "Invalid project ID format." });
+  }
+
+  const { env_vars, app_port } = req.body;
+
+  const envValidation = validateEnvVars(env_vars);
+  if (!envValidation.valid) {
+    return res.status(400).json({ detail: envValidation.detail });
+  }
+  const sanitizedInputEnvs = envValidation.sanitized;
+
+  if (app_port) {
+    const p = parseInt(app_port, 10);
+    if (isNaN(p) || p <= 0 || p > 65535) {
+      return res.status(400).json({ detail: "Invalid port specification." });
+    }
+  }
+
   try {
-    const { env_vars, app_port } = req.body;
     const projRes = await db.query(
       'SELECT * FROM projects WHERE id = $1 AND owner_id = $2',
-      [req.params.project_id, req.currentUser.id]
+      [project_id, req.currentUser.id]
     );
     if (projRes.rows.length === 0) {
       return res.status(404).json({ detail: "Project not found" });
@@ -1526,9 +1695,9 @@ app.post('/api/projects/:project_id/env', loadCurrentUser, async (req, res) => {
     const project = projRes.rows[0];
 
     // Update app port if specified
-    if (app_port && app_port !== project.app_port) {
-      await db.query('UPDATE projects SET app_port = $1 WHERE id = $2', [app_port, project.id]);
-      project.app_port = app_port;
+    if (app_port && parseInt(app_port, 10) !== project.app_port) {
+      project.app_port = parseInt(app_port, 10);
+      await db.query('UPDATE projects SET app_port = $1 WHERE id = $2', [project.app_port, project.id]);
     }
 
     // Retrieve latest deployment to get app image and existing envs
@@ -1539,7 +1708,7 @@ app.post('/api/projects/:project_id/env', loadCurrentUser, async (req, res) => {
     const latestDeploy = depRes.rows[0];
     const currentImage = latestDeploy ? latestDeploy.app_image : (project.github_repo ? `zynkara-local-${project.id.replace(/-/g, '')}:latest` : 'nginx:alpine');
     const existingEnvs = (latestDeploy && latestDeploy.env_vars) ? latestDeploy.env_vars : {};
-    const mergedEnvs = { ...existingEnvs, ...(env_vars || {}) };
+    const mergedEnvs = { ...existingEnvs, ...(sanitizedInputEnvs || {}) };
 
     // Update deployment record with merged environment map
     if (latestDeploy) {
@@ -1622,12 +1791,11 @@ if (fs.existsSync(frontendDistPath)) {
 
 // Start Server
 db.initializeDatabase()
-  .then(() => seedDatabase())
   .then(() => {
     app.listen(PORT, () => {
       console.log(`ZynkaraShift Control Plane API listening on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error("Failed to initialize or seed database on startup:", err);
+    console.error("Failed to initialize database on startup:", err);
   });
