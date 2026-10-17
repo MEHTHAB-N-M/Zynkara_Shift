@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # ── Configuration (customize these) ──────────────────────────────────────────
-RESOURCE_GROUP="rg-zynkarashift"
+RESOURCE_GROUP="rg-zynkara"
 LOCATION="centralindia"                 # Allowed region (centralindia, indiasouthcentral, koreacentral, eastasia)
 VM_NAME="zynkarashift-vm"
 VM_SIZE="Standard_B2s"               # 2 vCPU, 4 GB RAM — fits Azure Student free tier
@@ -37,10 +37,11 @@ az group create \
   --output none
 
 # ── Step 2: Create Network Security Group ────────────────────────────────────
-echo "[2/5] Creating network security group with firewall rules..."
+echo "[2/5] Creating network security group with firewall rules in $LOCATION..."
 az network nsg create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$NSG_NAME" \
+  --location "$LOCATION" \
   --output none
 
 # Allow SSH (port 22)
@@ -88,10 +89,11 @@ az network nsg rule create \
   --output none
 
 # ── Step 3: Create the VM ───────────────────────────────────────────────────
-echo "[3/5] Creating VM: $VM_NAME ($VM_SIZE)..."
+echo "[3/5] Creating VM: $VM_NAME ($VM_SIZE) in $LOCATION..."
 az vm create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$VM_NAME" \
+  --location "$LOCATION" \
   --image "$VM_IMAGE" \
   --size "$VM_SIZE" \
   --admin-username "$ADMIN_USER" \
