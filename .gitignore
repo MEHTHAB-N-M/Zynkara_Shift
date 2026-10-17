@@ -10,10 +10,9 @@ backend/node_modules/
 frontend/node_modules/
 
 # Production builds and temporary folders
-dist/
 build-temp/
 backend/build-temp/
-frontend/dist/
+!frontend/dist/**
 
 # OS/IDE files
 .DS_Store
