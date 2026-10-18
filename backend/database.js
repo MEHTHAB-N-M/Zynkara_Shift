@@ -95,6 +95,14 @@ async function initializeDatabase() {
       );
     `);
     
+    // Ensure all columns exist on projects table (for existing database volumes)
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS db_type VARCHAR(50);`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo VARCHAR(255);`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_branch VARCHAR(100) DEFAULT 'main';`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_token VARCHAR(255);`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS app_port INTEGER DEFAULT 80 NOT NULL;`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active' NOT NULL;`);
+
     // Create Deployments table
     await client.query(`
       CREATE TABLE IF NOT EXISTS deployments (
@@ -107,6 +115,12 @@ async function initializeDatabase() {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
       );
     `);
+
+    // Ensure all columns exist on deployments table (for existing database volumes)
+    await client.query(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS app_image VARCHAR(255);`);
+    await client.query(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS env_vars JSONB;`);
+    await client.query(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS logs TEXT;`);
+    await client.query(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'building' NOT NULL;`);
 
     // Create Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`);

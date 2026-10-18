@@ -1376,8 +1376,8 @@ app.post('/api/projects', deployLimiter, loadCurrentUser, async (req, res) => {
     res.json(returnedProject);
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ detail: "Internal database query error" });
+    console.error("Project deployment creation error:", err);
+    res.status(500).json({ detail: err.message || "Internal database query error" });
   }
 });
 
