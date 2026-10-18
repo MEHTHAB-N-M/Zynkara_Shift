@@ -212,7 +212,6 @@ ZynkaraShift is a single-node platform built to learn how PaaS systems work. Sig
 
 ## ⚠️ Security Notes
 
-- The control plane and Traefik containers require read/write access to `/var/run/docker.sock` to orchestrate dynamic containers and networks. Run ZynkaraShift in a trusted or dedicated host environment.
 - Always generate a strong, random `JWT_SECRET` and secure database passwords before hosting publicly.
 
 ---
