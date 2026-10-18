@@ -196,6 +196,20 @@ For deploying ZynkaraShift to an Azure Virtual Machine or custom Linux VPS with 
 
 ---
 
+## ⚠️ Known Limitations
+
+ZynkaraShift is a single-node platform built to learn how PaaS systems work. Signups are invite-only (admin approval) because of the limits below.
+
+- **Shared ingress network:** app containers join `zynkara-traefik-net`, so apps from different tenants can reach each other on that network. Per-project networks protect databases, not app-to-app traffic.
+- **Memory overcommit:** each container is capped at 512 MB, but the host is a 1 GB VM (+ swap), so only a few apps can run at once.
+- **Docker socket access:** Traefik and the control plane mount `/var/run/docker.sock`, which is root-equivalent on the host.
+- **Untrusted builds:** Git builds run user-supplied Dockerfiles with no build timeout or size limits.
+- **Cloud metadata:** tenant containers are not blocked from the Azure metadata endpoint (`169.254.169.254`).
+- **Certificates:** per-subdomain Let's Encrypt certs can hit rate limits at scale.
+- **Billing is simulated:** the Stripe upgrade flow is a demo.
+
+---
+
 ## ⚠️ Security Notes
 
 - The control plane and Traefik containers require read/write access to `/var/run/docker.sock` to orchestrate dynamic containers and networks. Run ZynkaraShift in a trusted or dedicated host environment.
