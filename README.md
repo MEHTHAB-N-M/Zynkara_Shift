@@ -206,4 +206,4 @@ For deploying ZynkaraShift to an Azure Virtual Machine or custom Linux VPS with 
 ## 👤 Author
 
 **Mehthab N M**  
-[Portfolio](https://mehthab-n-m.github.io/My_portfolio/) · [LinkedIn](https://www.linkedin.com/in/mehthab-n-m-637611344) · [GitHub](https://github.com/MEHTHAB-N-M)
+[Portfolio](https://mehthab-n-m.github.io/) · [LinkedIn](https://www.linkedin.com/in/mehthab-n-m-637611344) · [GitHub](https://github.com/MEHTHAB-N-M)
