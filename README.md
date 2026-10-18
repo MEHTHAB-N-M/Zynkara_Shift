@@ -1,26 +1,25 @@
 # ☁️ ZynkaraShift: Self-Hosted PaaS Platform
 
-A production-ready, self-hosted, multi-tenant Platform-as-a-Service. Deploy applications and isolated databases from Docker images or Git repositories, obtain automatic subdomains with SSL, and keep every tenant workload strictly isolated.
+A hardened, self-hosted, single-node Platform-as-a-Service. Deploy applications and isolated databases from Docker images or Git repositories, with automatic subdomains and SSL.
+
 
 <p align="center">
   <img src="docs/zynkarashift_demo.webp" alt="ZynkaraShift Platform Demo" width="100%" />
 </p>
 
-ZynkaraShift runs on any Linux or Windows host using Docker Desktop or Docker Engine. It unites **Traefik** (dynamic subdomain routing and automatic Let's Encrypt TLS), **Docker container orchestration** with kernel-level resource hard caps, a **Zero-Config Buildpack Engine**, a **Self-Healing Watchdog**, and a **Subscription & Access Control Gate**.
-
----
+ZynkaraShift runs on any Linux or Windows host using Docker Desktop or Docker Engine. It unites Traefik (dynamic subdomain routing and automatic Let's Encrypt TLS), Docker container orchestration with container resource caps, a Zero-Config Buildpack Engine, a Self-Healing Watchdog, and a Subscription & Access Control Gate.
 
 ## ✨ Key Features
 
 - 🚀 **Deploy from Docker Images or Git Repositories:** Deploy pre-built Docker Hub images or connect a Git repository.
 - 📦 **Zero-Config Buildpack Engine:** Auto-detects frameworks (Next.js, React SPA, Vite, Vue/Nuxt, Python, Go, Rust, Static HTML) and synthesizes multi-stage production Dockerfiles on the fly.
-- 🤖 **AI Deployment Copilot:** Natural language orchestration assistant (e.g., *"Deploy image nginx:alpine name app-1 with postgres"*).
+- 🤖 **AI Deployment Copilot:** Natural language orchestration assistant (e.g., "Deploy image nginx:alpine name app-1 with postgres").
 - 🌐 **Automatic Subdomains & TLS:** Dynamic reverse proxying via Traefik without downtime or reloads. Automatic Let's Encrypt SSL/TLS certificates and HTTPS redirection.
-- 🔒 **Dual-Network Container Isolation:** Application containers communicate across private per-project bridge networks (`zynkara-project-{id}`). Database containers have zero exposed host ports.
+- 🔒 **Per-Project Database Isolation:** Each project gets a private bridge network (`zynkara-project-{id}`), and database containers have zero exposed host ports.
 - 🗄️ **One-Click Managed Databases:** Provision isolated PostgreSQL, MySQL, MongoDB, and Redis instances with host-persisted volumes.
-- 📏 **Hard Resource Caps & Sandboxing:** Containers are enforced with 512 MB RAM (+ 512 MB swap), 0.5 CPU core quota, 100–150 PID limit, dropped capabilities (`ALL`), and `no-new-privileges:true`.
+- 📏 **Hard Resource Caps & Sandboxing:** Containers are enforced with 512 MB RAM (+ 512 MB swap), 0.5 CPU core quota, 100–150 PID limit, dropped capabilities (ALL), and `no-new-privileges:true`.
 - ⏱️ **Self-Healing Post-Boot Watchdog:** 30-second post-boot telemetry monitor that detects crash loops or non-zero exit codes and automatically triggers rollbacks to previous stable builds.
-- 🔐 **Enterprise Auth & Security Suite:** Email verification with SMTP, Disposable Email Domain blocking (Abstract API + static blocklist), Google & GitHub OAuth, rate-limiting, and RBAC admin approval workflows.
+- 🔐 **Enterprise Auth & Security Suite:** Email verification with SMTP, disposable email domain blocking (Abstract API + static blocklist), Google & GitHub OAuth, rate-limiting, and RBAC admin approval workflows.
 - 💳 **Tiered Project Limits:** Free tier enforcement (3 active projects limit) with simulated or Stripe-backed subscription upgrades.
 
 ---
