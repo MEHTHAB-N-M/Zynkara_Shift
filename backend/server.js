@@ -291,6 +291,115 @@ function validateEnvVars(envVars) {
   return { valid: true, sanitized };
 }
 
+// In-memory cache for live domain email validation (24h TTL)
+const liveEmailValidationCache = new Map();
+const LIVE_EMAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Helper to query Abstract API's Email Validation API (fail-open)
+async function checkAbstractEmailApi(email, domain) {
+  const apiKey = process.env.ABSTRACT_EMAIL_API_KEY;
+
+  // Fail-open: If no API key is provided, log once or proceed without blocking
+  if (!apiKey || !apiKey.trim()) {
+    return { valid: true };
+  }
+
+  // 1. Check in-memory cache by domain to conserve API quota
+  const cached = liveEmailValidationCache.get(domain);
+  if (cached && (Date.now() - cached.timestamp < LIVE_EMAIL_CACHE_TTL_MS)) {
+    if (cached.isDisposable) {
+      return {
+        valid: false,
+        detail: "Disposable/temporary email addresses are not allowed. Please use a real email address."
+      };
+    }
+    if (cached.isUndeliverable) {
+      return {
+        valid: false,
+        detail: "This email address doesn't appear to be valid or able to receive mail."
+      };
+    }
+    return { valid: true };
+  }
+
+  // 2. Query Abstract API live endpoint (Supports both Email Reputation & Email Validation APIs)
+  try {
+    let response;
+    try {
+      response = await axios.get('https://emailreputation.abstractapi.com/v1/', {
+        params: {
+          api_key: apiKey.trim(),
+          email: email
+        },
+        timeout: 5000 // 5-second timeout to prevent stalling signups
+      });
+    } catch (primaryErr) {
+      // If unauthorized or not found on reputation endpoint, fallback to validation endpoint
+      if (primaryErr.response?.status === 401 || primaryErr.response?.status === 404) {
+        response = await axios.get('https://emailvalidation.abstractapi.com/v1/', {
+          params: {
+            api_key: apiKey.trim(),
+            email: email
+          },
+          timeout: 5000
+        });
+      } else {
+        throw primaryErr;
+      }
+    }
+
+    const data = response.data || {};
+
+    // Support both Abstract Email Reputation API & Email Validation API response structures:
+    // Email Reputation API: data.email_quality.is_disposable === true
+    // Email Validation API: data.is_disposable_email.value === true
+    const isDisposable = Boolean(
+      data.email_quality?.is_disposable === true ||
+      data.is_disposable_email?.value === true ||
+      data.is_disposable_email === true ||
+      data.is_disposable === true
+    );
+
+    // Deliverability values: "deliverable", "undeliverable", "unknown"
+    const deliverability = typeof data.email_deliverability?.status === 'string'
+      ? data.email_deliverability.status.toUpperCase()
+      : (typeof data.deliverability === 'string' ? data.deliverability.toUpperCase() : '');
+    const isUndeliverable = deliverability === 'UNDELIVERABLE';
+
+    // Store evaluation in cache (bounded to 5000 entries)
+    if (liveEmailValidationCache.size > 5000) {
+      const oldestKey = liveEmailValidationCache.keys().next().value;
+      liveEmailValidationCache.delete(oldestKey);
+    }
+    liveEmailValidationCache.set(domain, {
+      isDisposable,
+      isUndeliverable,
+      timestamp: Date.now()
+    });
+
+    if (isDisposable) {
+      return {
+        valid: false,
+        detail: "Disposable/temporary email addresses are not allowed. Please use a real email address."
+      };
+    }
+
+    if (isUndeliverable) {
+      return {
+        valid: false,
+        detail: "This email address doesn't appear to be valid or able to receive mail."
+      };
+    }
+
+    return { valid: true };
+  } catch (err) {
+    // Fail-open: If Abstract API is down, rate-limited, times out, or quota exhausted (429),
+    // log warning and allow registration to proceed based on static list + MX checks.
+    console.warn(`[EMAIL-VERIFY] Abstract API check failed for domain '${domain}' (failing open):`, err.response?.data || err.message);
+    return { valid: true };
+  }
+}
+
 // Helper to validate email domains & resolve MX records
 async function validateEmailDomain(email) {
   if (!email || typeof email !== 'string') return { valid: false, detail: "Invalid email input" };
@@ -305,7 +414,7 @@ async function validateEmailDomain(email) {
     return { valid: true };
   }
 
-  // Reject disposable / temporary email domains immediately
+  // Reject disposable / temporary email domains immediately using static blocklist
   if (disposableDomainsSet.has(domain)) {
     return {
       valid: false,
@@ -313,7 +422,7 @@ async function validateEmailDomain(email) {
     };
   }
 
-  // Whitelisted common domains
+  // Whitelisted common domains - skip external checks completely
   const whitelistedDomains = [
     'gmail.com', 'googlemail.com',
     'github.com', 'users.noreply.github.com',
@@ -324,7 +433,7 @@ async function validateEmailDomain(email) {
 
   const isWhitelisted = whitelistedDomains.includes(domain) || whitelistedDomains.some(d => domain.endsWith('.' + d));
 
-  // If directly whitelisted, accept immediately
+  // If directly whitelisted, accept immediately (conserves API calls & skips DNS)
   if (isWhitelisted) {
     return { valid: true };
   }
@@ -338,6 +447,12 @@ async function validateEmailDomain(email) {
   } catch (err) {
     console.warn(`MX record check failed for domain ${domain}:`, err.message);
     return { valid: false, detail: `Email domain '${domain}' could not be verified (DNS resolve failed).` };
+  }
+
+  // Live disposable-email & deliverability check via Abstract API (second layer, fail-open)
+  const liveCheck = await checkAbstractEmailApi(email, domain);
+  if (!liveCheck.valid) {
+    return liveCheck;
   }
 
   return { valid: true };

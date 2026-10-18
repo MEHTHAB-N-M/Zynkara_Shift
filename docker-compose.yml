@@ -50,6 +50,7 @@ services:
       - SMTP_USER=${SMTP_USER}
       - SMTP_PASS=${SMTP_PASS}
       - SMTP_FROM=${SMTP_FROM}
+      - ABSTRACT_EMAIL_API_KEY=${ABSTRACT_EMAIL_API_KEY}
     ports:
       - "8000:8000" # Expose direct access on port 8000
     depends_on:
