@@ -1,33 +1,43 @@
 # ☁️ ZynkaraShift: Self-Hosted PaaS Platform
 
-A zero-cost, self-hosted, multi-tenant Platform-as-a-Service. Deploy apps and databases from Docker images, get a public subdomain automatically, and keep every project isolated.
+A production-ready, self-hosted, multi-tenant Platform-as-a-Service. Deploy applications and isolated databases from Docker images or Git repositories, obtain automatic subdomains with SSL, and keep every tenant workload strictly isolated.
 
 <p align="center">
   <img src="docs/zynkarashift_demo.webp" alt="ZynkaraShift Platform Demo" width="100%" />
 </p>
 
-ZynkaraShift runs on a local Linux or Windows host using Docker Desktop. It combines Traefik (dynamic subdomain routing via Docker labels), Docker container orchestration with memory/CPU hard caps, and a subscription gateway that limits free users to 3 active projects.
+ZynkaraShift runs on any Linux or Windows host using Docker Desktop or Docker Engine. It unites **Traefik** (dynamic subdomain routing and automatic Let's Encrypt TLS), **Docker container orchestration** with kernel-level resource hard caps, a **Zero-Config Buildpack Engine**, a **Self-Healing Watchdog**, and a **Subscription & Access Control Gate**.
+
+---
 
 ## ✨ Key Features
 
-- 🚀 **One-click deployment** of apps from Docker images
-- 🤖 **AI deployment assistant** (e.g. "Deploy image nginx:alpine name app-1")
-- 🌐 **Automatic subdomain** per project via Traefik, with no restarts
-- 🔒 **Isolated container networking** with strict per-project private bridge networks
-- 🗄️ **Isolated databases** per project (Postgres, MySQL, MongoDB, Redis)
-- 📏 **Hard resource caps:** 512 MB RAM and 0.5 CPU per container
-- 💳 **Free tier (3 projects)** with a simulated Stripe upgrade flow
+- 🚀 **Deploy from Docker Images or Git Repositories:** Deploy pre-built Docker Hub images or connect a Git repository.
+- 📦 **Zero-Config Buildpack Engine:** Auto-detects frameworks (Next.js, React SPA, Vite, Vue/Nuxt, Python, Go, Rust, Static HTML) and synthesizes multi-stage production Dockerfiles on the fly.
+- 🤖 **AI Deployment Copilot:** Natural language orchestration assistant (e.g., *"Deploy image nginx:alpine name app-1 with postgres"*).
+- 🌐 **Automatic Subdomains & TLS:** Dynamic reverse proxying via Traefik without downtime or reloads. Automatic Let's Encrypt SSL/TLS certificates and HTTPS redirection.
+- 🔒 **Dual-Network Container Isolation:** Application containers communicate across private per-project bridge networks (`zynkara-project-{id}`). Database containers have zero exposed host ports.
+- 🗄️ **One-Click Managed Databases:** Provision isolated PostgreSQL, MySQL, MongoDB, and Redis instances with host-persisted volumes.
+- 📏 **Hard Resource Caps & Sandboxing:** Containers are enforced with 512 MB RAM (+ 512 MB swap), 0.5 CPU core quota, 100–150 PID limit, dropped capabilities (`ALL`), and `no-new-privileges:true`.
+- ⏱️ **Self-Healing Post-Boot Watchdog:** 30-second post-boot telemetry monitor that detects crash loops or non-zero exit codes and automatically triggers rollbacks to previous stable builds.
+- 🔐 **Enterprise Auth & Security Suite:** Email verification with SMTP, Disposable Email Domain blocking (Abstract API + static blocklist), Google & GitHub OAuth, rate-limiting, and RBAC admin approval workflows.
+- 💳 **Tiered Project Limits:** Free tier enforcement (3 active projects limit) with simulated or Stripe-backed subscription upgrades.
+
+---
 
 ## 🧱 Tech Stack
 
 | Layer | Technology |
 |---|---|
-| **Control plane API** | Python, FastAPI, Docker SDK |
-| **Database** | PostgreSQL |
-| **Reverse proxy** | Traefik |
-| **Containers** | Docker, Docker Compose |
-| **Frontend** | JavaScript (React, Vite) |
-| **CI/CD** | GitHub Actions |
+| **Control Plane API** | Node.js, Express, Dockerode, PG |
+| **Relational Database** | PostgreSQL 15 (Control plane state & metadata) |
+| **Reverse Proxy & Ingress** | Traefik v2.11 (Docker provider, ACME Let's Encrypt) |
+| **Container Engine** | Docker, Docker Compose |
+| **Frontend Dashboard** | React 19, Vite, Vanilla CSS |
+| **Buildpacks Engine** | Built-in multi-stage Dockerfile synthesizer |
+| **Deployment Targets** | Localhost (Docker Desktop) & Azure Linux VMs |
+
+---
 
 ## 📸 Screenshots
 
@@ -39,126 +49,157 @@ ZynkaraShift runs on a local Linux or Windows host using Docker Desktop. It comb
 |:---:|
 | ![Deploy Project Modal](docs/deploy_modal.png) |
 
-## 1. System Topology Diagram
+---
 
-Secure traffic routing from public clients to isolated containerized services:
+## 1. System Architecture & Topology
+
+Secure traffic routing from public web clients to isolated containerized services:
 
 ```
-┌──────────────────────────────┐
-│      Public Web Client       │
-└──────────────┬───────────────┘
-               │
-               │ HTTP (Wildcard: *.zynkarashift.duckdns.org / localhost)
-               ▼
-┌──────────────────────────────┐
-│    Traefik Reverse Proxy     │
-│  (Host Header: app.your...)  │
-└──────────────┬───────────────┘
-               │
-┌──────────────┴──────────────────────────┐
-│ Traefik Net: zynkarashift-traefik-net   │
-└──────────────┬──────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│                   Public Web Client                    │
+└───────────────────────────┬────────────────────────────┘
+                            │
+                            │ HTTP / HTTPS (*.zynkarashift.me / *.localhost)
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│                 Traefik Reverse Proxy                  │
+│             (Let's Encrypt ACME TLS / Port 80, 443)    │
+└───────────────────────────┬────────────────────────────┘
+                            │
+┌───────────────────────────┴────────────────────────────┐
+│ Traefik Network: zynkara-traefik-net                   │
+└──────────────┬─────────────────────────────────────────┘
                │
                ▼
 ┌────────────────────────────────────────────────────────┐
-│ Project Isolated Network: zynkarashift-net-{project_id}│
+│ Project Isolated Network: zynkara-project-{project_id} │
 │                                                        │
 │  ┌───────────────────────┐       ┌──────────────────┐  │
 │  │     App Container     │◄─────►│   DB Container   │  │
-│  │ (Labels: traefik.     │       │ (Postgres/MySQL/ │  │
-│  │  enable=true;         │       │  MongoDB/Redis)  │  │
+│  │ (zynkara-app-{id})    │       │ (zynkara-db-{id})│  │
+│  │  Labels: traefik.     │       │  Postgres/MySQL/ │  │
+│  │  enable=true;         │       │  MongoDB/Redis   │  │
 │  │  mem_limit=512m;      │       │ (Volume mapped,  │  │
-│  │  nano_cpus=0.5 CPU)   │       │  No exposed ports│  │
+│  │  nano_cpus=0.5 CPU    │       │  No exposed ports│  │
 │  └───────────────────────┘       └──────────────────┘  │
 │                                                        │
 └────────────────────────────────────────────────────────┘
 ```
 
-## 2. Infrastructure Design Highlights
-
-### Networking & Reverse Proxy Hardening
-- **Dynamic Traefik Subdomains:** Traefik listens on `/var/run/docker.sock` and automatically discovers newly created application containers. Based on labels injected by the orchestration service (e.g. `traefik.http.routers.zynkarashift-router-{id}.rule=Host(...)`), Traefik maps the custom subdomain without restarting.
-- **Container Isolation (Dual-Network Architecture):**
-  - The application container is attached to both `zynkarashift-traefik-net` (so Traefik can proxy HTTP traffic to it) and `zynkarashift-net-{project_id}` (so it can query its database).
-  - The database container (Postgres, MySQL, MongoDB, or Redis) is **only** attached to the isolated project network `zynkarashift-net-{project_id}`.
-  - **Zero exposed ports for databases:** database ports are not published to the host or the public internet. Communication happens over the private bridge network via Docker's internal DNS (`db-service`).
-
-### Dynamic Orchestration Service
-- **Volume persistence:** Maps host volumes to prevent data loss during container restarts (bind-mapped at `/var/zynkarashift/volumes/{tenant_id}/{project_id}/{db_type}`).
-- **Hard resource caps:** Containers are limited to 512 MB RAM and 0.5 CPU cores using the Docker SDK:
-  - `mem_limit="512m"`
-  - `nano_cpus=500000000` (half a core)
-
-### Relational Database Schema
-The control plane uses PostgreSQL to manage state:
-- **`User`:** accounts and `subscription_status` (`'free'` or `'premium'`)
-- **`Project`:** workspaces, subdomains, database types, and statuses
-- **`Deployment`:** image tags, injected environment variables, and build/stdout logs
-
-### The 3-Free-Projects Subscription Gate
-- **FastAPI dependency guardrail:** On project creation, the user's active project count is checked. If they have 3 active projects and are not premium, the request returns HTTP `403 Forbidden`:
-  ```json
-  {
-    "detail": {
-      "error": "Subscription required",
-      "message": "You have reached the maximum limit of 3 free deployed projects. Please upgrade to a premium tier to unlock unlimited deployments."
-    }
-  }
-  ```
-- **Stripe checkout modal:** The UI catches the 403, locks the deploy form, and shows a card-checkout modal that simulates an upgrade (no real payments are processed).
-
 ---
 
-### ⚠️ Security Notes
-Traefik and the orchestration service access `/var/run/docker.sock`, which grants broad control over the host's Docker daemon. This design is intended for a trusted, self-hosted environment.
+## 2. Infrastructure & Orchestration Highlights
 
-The seeded demo credentials below are for local testing only. Change or remove them before exposing the platform publicly.
+### Dual-Network Isolation & Reverse Proxy Routing
+- **Dynamic Traefik Discovery:** Traefik listens on `/var/run/docker.sock` to detect application containers dynamically without requiring restarts.
+- **Dual-Network Attachment:**
+  - The application container (`zynkara-app-{project_id}`) attaches to `zynkara-traefik-net` (for incoming HTTP/HTTPS proxying) and `zynkara-project-{project_id}` (for database communication).
+  - The database container (`zynkara-db-{project_id}`) attaches **only** to `zynkara-project-{project_id}`.
+- **Zero Exposed Database Ports:** Databases are never bound to the host network interface or the public internet. Application containers communicate internally using Docker's embedded DNS (`db-service`).
+
+### Resource Caps & Hardening
+- **Resource Limits:** Docker SDK sets `Memory: 512MB`, `MemorySwap: 1GB`, `NanoCpus: 500000000` (0.5 CPU core quota).
+- **Process & Privilege Security:** Containers run with `SecurityOpt: ['no-new-privileges:true']`, `PidsLimit: 100`, and `CapDrop: ['ALL']` to prevent privilege escalations and fork bombs.
+- **Persistent Storage:** Databases bind-mount state to `/var/zynkara/volumes/{owner_id}/{project_id}/{db_type}`.
+
+### Zero-Config Buildpack Engine
+- When deploying from source or Git repositories, `buildpacks.js` inspects repository manifests (`package.json`, `requirements.txt`, `go.mod`, `Cargo.toml`, etc.).
+- Automatically creates lean, multi-stage production Docker images and exposes the designated application ports (e.g., 3000 for Next.js, 80 for static/SPA).
+
+### Self-Healing Post-Boot Watchdog
+- `watchdog.js` conducts a 30-second post-boot telemetry check on newly deployed containers.
+- If a container enters a crash loop or exits prematurely, the engine automatically rolls back the deployment to the previous known stable image and generates diagnostics in the deployment log.
+
+### Access Control & The 3-Project Free Limit
+- **Admin Access Gating:** New users register with `access_status: 'pending'`. The platform administrator approves or declines account requests via the Admin Console.
+- **Subscription Limit Guard:** Free users can deploy up to **3 active projects**. Deploying a 4th project triggers an HTTP `403 Forbidden` response:
+  ```json
+  {
+    "error": "Subscription required",
+    "message": "You have reached the maximum limit of 3 free deployed projects. Please upgrade to a premium tier to unlock unlimited deployments."
+  }
+  ```
+- **Stripe & Simulated Upgrade:** Users can upgrade directly via the UI modal to unlock unlimited deployments.
 
 ---
 
 ## 3. Getting Started
 
 ### Prerequisites
-- Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows or Linux.
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) or [Docker Engine](https://docs.docker.com/engine/) with Docker Compose v2 (Linux).
 
-### Startup Instructions
+### Quickstart
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/MEHTHAB-N-M/Zynkara_Shift.git
    cd Zynkara_Shift
    ```
 
-2. **Start the control plane:**
+2. **Configure environment variables:**
+   ```bash
+   cp .env.production.example .env
+   ```
+   *Edit `.env` to set your PostgreSQL credentials and domain (default: `PLATFORM_DOMAIN=zynkarashift.me` or `localhost`).*
+
+3. **Start the platform:**
    ```bash
    docker compose up -d
    ```
 
-3. Open `http://localhost:8000` or `http://zynkarashift.localhost` to access the dashboard.
+4. **Initialize the administrator account:**
+   ```bash
+   docker compose exec control-plane-api node create_admin.js
+   ```
+   *(Or run `node create_admin.js` directly within the `backend/` directory).*
 
-### Demo Credentials (Seeded, local testing only)
-
-| Account | Email | Password |
-|---|---|---|
-| **Free** | `free@sovereign.local` | `password123` |
-| **Premium** | `premium@sovereign.local` | `password123` |
+5. **Open the dashboard:**
+   - Local: [http://localhost:8000](http://localhost:8000) or [http://zynkara.localhost](http://zynkara.localhost)
+   - Public domain: `https://your-domain.com` (if configured with DNS and SSL)
 
 ---
 
 ## 4. Verification Workflow
 
-1. **Verify the 3-project limit (free user):**
-   - Log in as `free@sovereign.local`.
-   - Deploy 3 test apps (via quick deploy or the AI assistant, e.g. `"Deploy image nginx:alpine name app-1"`).
-   - Try to deploy a 4th app.
-   - **Expected:** The backend returns `403 Forbidden`, and the dashboard locks the deploy form and opens the checkout overlay.
+1. **Sign Up & Approve Account:**
+   - Open the web dashboard, click **Sign Up**, and create an account with a valid email.
+   - Run `node create_admin.js` or log in as the administrator to approve the pending access request.
 
-2. **Upgrade to Premium:**
-   - Complete the card form and click **Pay $15** (simulated).
-   - **Expected:** A `POST` to `/api/subscription/upgrade` updates the database, the badge changes to `PREMIUM`, and the 4th deployment completes.
+2. **Deploy Applications:**
+   - Deploy an image (e.g. `nginx:alpine` or `redis:alpine`) or use the AI Copilot:
+     ```
+     Deploy image nginx:alpine name web-preview port 80
+     ```
+   - Watch build logs stream in real time. Once active, test your new subdomain: `http://web-preview.localhost` (or `https://web-preview.your-domain.com`).
 
-3. **Verify isolated databases:**
-   - Run `docker inspect zynkarashift-db-<project_id>` and confirm no ports are published and it is only on `zynkarashift-net-{project_id}`.
-   - Run `docker inspect zynkarashift-app-<project_id>` and confirm it is on both `zynkarashift-traefik-net` and `zynkarashift-net-{project_id}`.
+3. **Verify Isolated Databases:**
+   - Deploy an application with a database attached (e.g. PostgreSQL).
+   - Inspect the database container:
+     ```bash
+     docker inspect zynkara-db-<project_id>
+     ```
+   - Verify that **no host ports are published** and it is only connected to `zynkara-project-<project_id>`.
+
+4. **Verify the 3-Project Limit & Upgrade:**
+   - Deploy 3 test applications under a free account.
+   - Attempt a 4th deployment; verify that the platform returns a `403 Subscription required` notification and presents the upgrade overlay.
+   - Complete the upgrade flow to confirm unlimited deployments are unlocked.
+
+---
+
+## 5. Cloud & Production Deployment
+
+For deploying ZynkaraShift to an Azure Virtual Machine or custom Linux VPS with automatic Let's Encrypt SSL and firewall rules, refer to:
+- [AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md)
+- [deploy-azure.sh](deploy-azure.sh)
+
+---
+
+## ⚠️ Security Notes
+
+- The control plane and Traefik containers require read/write access to `/var/run/docker.sock` to orchestrate dynamic containers and networks. Run ZynkaraShift in a trusted or dedicated host environment.
+- Always generate a strong, random `JWT_SECRET` and secure database passwords before hosting publicly.
 
 ---
 
