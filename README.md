@@ -52,7 +52,7 @@ ZynkaraShift runs on any Linux or Windows host using Docker Desktop or Docker En
 
 ## 1. System Architecture & Topology
 
-Secure traffic routing from public web clients to isolated containerized services:
+Secure traffic routing from public web clients to containerized services:
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -72,7 +72,7 @@ Secure traffic routing from public web clients to isolated containerized service
                │
                ▼
 ┌────────────────────────────────────────────────────────┐
-│ Project Isolated Network: zynkara-project-{project_id} │
+│ Project Network: zynkara-project-{project_id} │
 │                                                        │
 │  ┌───────────────────────┐       ┌──────────────────┐  │
 │  │     App Container     │◄─────►│   DB Container   │  │
@@ -90,7 +90,7 @@ Secure traffic routing from public web clients to isolated containerized service
 
 ## 2. Infrastructure & Orchestration Highlights
 
-### Dual-Network Isolation & Reverse Proxy Routing
+### Dual-Network Attachment & Reverse Proxy Routing
 - **Dynamic Traefik Discovery:** Traefik listens on `/var/run/docker.sock` to detect application containers dynamically without requiring restarts.
 - **Dual-Network Attachment:**
   - The application container (`zynkara-app-{project_id}`) attaches to `zynkara-traefik-net` (for incoming HTTP/HTTPS proxying) and `zynkara-project-{project_id}` (for database communication).
