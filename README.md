@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/zynkarashift_demo.webp" alt="ZynkaraShift Platform Demo" width="100%" />
+  <video src="docs/zynkarashift_demo.mp4" width="100%" controls autoplay loop muted></video>
 </p>
 
 > ⭐ **If this project helps you learn how a PaaS works, please star the repo. It really helps!**
