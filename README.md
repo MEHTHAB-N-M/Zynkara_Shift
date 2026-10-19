@@ -219,3 +219,8 @@ ZynkaraShift is a single-node platform built to learn how PaaS systems work. Sig
 
 **Mehthab N M**  
 [Portfolio](https://mehthab-n-m.github.io/) · [LinkedIn](https://www.linkedin.com/in/mehthab-n-m-637611344) · [GitHub](https://github.com/MEHTHAB-N-M)
+
+## License
+
+All rights reserved. Source available for viewing and evaluation only.
+See the [LICENSE](LICENSE) file for details.
