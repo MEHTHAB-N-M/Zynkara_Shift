@@ -106,10 +106,10 @@ nano .env
 
 Set these values in `.env`:
 ```
-POSTGRES_DB=VaporupDeploy
-POSTGRES_USER=postgres
+POSTGRES_DB=your_db_name
+POSTGRES_USER=your_db_user
 POSTGRES_PASSWORD=<generate-a-strong-password>
-PLATFORM_DOMAIN=zynkarashift.duckdns.org
+PLATFORM_DOMAIN=your-subdomain.duckdns.org
 ```
 
 Then edit `backend/.env`:
@@ -121,10 +121,10 @@ Key values to set:
 ```
 JWT_SECRET=<run: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))">
 POSTGRES_PASSWORD=<same-as-root-.env>
-DATABASE_URL=postgresql://postgres:<same-password>@postgres-control:5432/VaporupDeploy
+DATABASE_URL=postgresql://your_db_user:<same-password>@postgres-control:5432/your_db_name
 ```
 
-To create your initial approved administrator account (`mehthab077@gmail.com`), run:
+To create your initial approved administrator account (e.g. `admin@example.com`), run:
 ```bash
 node backend/create_admin.js
 ```
@@ -175,17 +175,17 @@ Access your platform at: **http://YOUR_VM_PUBLIC_IP:8000**
 
 1. Go to **https://www.duckdns.org/**
 2. Sign in with GitHub/Google
-3. Create a subdomain (e.g., `zynkarashift`) → point it to your **Azure VM Public IP**
+3. Create a subdomain (e.g., `your-subdomain`) → point it to your **Azure VM Public IP**
 4. Update your `.env`:
    ```
-   PLATFORM_DOMAIN=zynkarashift.duckdns.org
+   PLATFORM_DOMAIN=your-subdomain.duckdns.org
    ```
 5. Restart:
    ```bash
    docker compose down && docker compose up -d
    ```
 
-Now your platform is accessible at: **http://zynkarashift.duckdns.org**
+Now your platform is accessible at: **http://your-subdomain.duckdns.org**
 
 ---
 
@@ -266,7 +266,7 @@ To set auto-shutdown:
 ```
         Internet
            |
-           | http://zynkarashift.duckdns.org
+           | http://your-subdomain.duckdns.org
            v
    +-------------------------------------------+
    |  Azure VM (Standard_B2s - 4 GB RAM)       |
