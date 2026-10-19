@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://zynkarashift.duckdns.org"><b>🔗 Live Demo</b></a> ·
+  <a href="https://zynkarashift.me/"><b>🔗 Live</b></a> ·
   <a href="#-quickstart-3-commands">Quickstart</a> ·
   <a href="#-system-architecture">Architecture</a> ·
   <a href="#-design-decisions">Design Decisions</a> ·
